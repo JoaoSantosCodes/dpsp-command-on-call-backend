@@ -1,9 +1,9 @@
 variables:
-  PROJ_NAME: commander-center
-  IMAGE_NAME: dpsp-command-on-call-backend
+  PROJ_NAME: command-on-call
+  IMAGE_NAME: $CI_PROJECT_NAME
   NAMESPACE: dpsp-command-on-call
 
 include:
-  - project: grupo-dpsp/devops/pipeline-cicd-base
+  - project: grupo-dpsp/devops/platform-engineering/ci-templates
     ref: main
-    file: devops-gitlab-ci-backend.yaml
+    file: pipelines/backend-node.yml
