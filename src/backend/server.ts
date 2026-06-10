@@ -1,0 +1,976 @@
+import express, { Express, Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import multer from 'multer';
+import { DatadogPollingService } from './services/datadog-polling';
+import { EscalationEngine } from './services/escalation-engine';
+import { ScheduleManager } from './services/schedule-manager';
+import { MonitorMappingService } from './services/monitor-mapping';
+import { IncidentHistoryService } from './services/incident-history';
+import { CSVProcessor } from './services/csv-processor';
+import { parseEscalationCSV, getCurrentOnCallForArea, EscalationEntry } from './services/escalation-csv-processor';
+import { getAreasForMonitor, getPrimaryAreaForMonitor } from './services/monitor-area-mapping';
+import { AuthService } from './services/auth';
+import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, getEffectiveAreaFilter } from './middleware/auth';
+import { TeamRepository } from './database/repositories/TeamRepository';
+import { UserRepository } from './database/repositories/UserRepository';
+import { AreaRepository } from './database/repositories/AreaRepository';
+import { PeriodoRepository } from './database/repositories/PeriodoRepository';
+import { EscalaRepository } from './database/repositories/EscalaRepository';
+import { EscalationChainMember, HistoryFilters } from '../shared/types';
+
+export interface ServerDependencies {
+  datadogPollingService: DatadogPollingService;
+  escalationEngine: EscalationEngine;
+  scheduleManager: ScheduleManager;
+  monitorMappingService: MonitorMappingService;
+  incidentHistoryService: IncidentHistoryService;
+  csvProcessor: CSVProcessor;
+  teamRepository: TeamRepository;
+  authService?: AuthService;
+  userRepository?: UserRepository;
+  areaRepository?: AreaRepository;
+  periodoRepository?: PeriodoRepository;
+  escalaRepository?: EscalaRepository;
+  db?: any; // SQLite database for escalation persistence
+}
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+// In-memory store for escalation CSV data (loaded from DB on startup)
+let escalationEntries: EscalationEntry[] = [];
+
+// Rate limiter for auth routes (prevent brute force)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 15, // máx 15 tentativas por IP
+  message: { error: 'Muitas tentativas. Tente novamente em 15 minutos.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+export function createServer(deps: ServerDependencies): Express {
+  const app = express();
+
+  // CORS — permite origens configuradas
+  const allowedOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',')
+    : ['http://localhost:5173', 'http://localhost:3000'];
+
+  app.use(cors({
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Selected-Area'],
+  }));
+
+  app.use(express.json());
+
+  // Rate limiting nas rotas de autenticação
+  app.use('/api/auth', authLimiter);
+
+  // Load escalation data from database on startup
+  if (deps.db) {
+    try {
+      const rows = deps.db.prepare('SELECT * FROM escalation_schedules').all() as any[];
+      escalationEntries = rows.map((r: any) => ({
+        area: r.area,
+        colaborador: r.colaborador,
+        cargo: r.cargo || '',
+        nivel: r.nivel || '',
+        contato: r.contato || '',
+        dia: r.dia,
+        horarioInicio: r.horario_inicio,
+        horarioFim: r.horario_fim,
+        is24h: r.is_24h === 1,
+      }));
+      console.log(`[CommandCenter] Loaded ${escalationEntries.length} escalation entries from database`);
+    } catch { /* table might not exist yet */ }
+  }
+
+  // GET /api/status — Status de conexão com Datadog
+  app.get('/api/status', (_req: Request, res: Response) => {
+    const isRunning = deps.datadogPollingService.isRunning;
+    res.json({
+      datadog: isRunning ? 'connected' : 'disconnected',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET /api/monitors — Listar monitores com estado
+  app.get('/api/monitors', (_req: Request, res: Response) => {
+    const monitors = deps.datadogPollingService.getMonitors();
+    res.json(monitors);
+  });
+
+  // GET /api/monitors/:id — Detalhes de um monitor específico (template/message)
+  app.get('/api/monitors/:id', async (req: Request, res: Response) => {
+    const monitorId = parseInt(req.params.id, 10);
+    if (isNaN(monitorId)) {
+      res.status(400).json({ error: 'ID inválido' });
+      return;
+    }
+    try {
+      const client = (deps.datadogPollingService as any).client;
+      if (client && client.getMonitorDetails) {
+        const details = await client.getMonitorDetails(monitorId);
+        if (!details) {
+          res.status(404).json({ error: 'Monitor não encontrado' });
+          return;
+        }
+        res.json(details);
+      } else {
+        // Fallback: return basic info from cached monitors
+        const monitors = deps.datadogPollingService.getMonitors();
+        const monitor = monitors.find((m) => m.id === monitorId);
+        if (!monitor) {
+          res.status(404).json({ error: 'Monitor não encontrado' });
+          return;
+        }
+        res.json({ id: monitor.id, name: monitor.name, state: monitor.state, message: 'Detalhes não disponíveis' });
+      }
+    } catch (err) {
+      res.status(500).json({ error: 'Erro ao buscar detalhes do monitor' });
+    }
+  });
+
+  // GET /api/monitors/:id/responsible — Retorna plantonistas responsáveis pelo monitor (todos escalões)
+  app.get('/api/monitors/:id/responsible', (req: Request, res: Response) => {
+    const monitorId = parseInt(req.params.id, 10);
+    if (isNaN(monitorId)) {
+      res.status(400).json({ error: 'ID inválido' });
+      return;
+    }
+
+    // Find the monitor name
+    const monitors = deps.datadogPollingService.getMonitors();
+    const monitor = monitors.find((m) => m.id === monitorId);
+    const monitorName = monitor?.name || '';
+
+    // Get areas responsible for this monitor
+    const areas = getAreasForMonitor(monitorName);
+    const primaryArea = getPrimaryAreaForMonitor(monitorName);
+
+    // Find ALL plantonistas for each area, ordered by escalation level
+    const responsibles = areas.map(area => {
+      const onCall = getCurrentOnCallForArea(escalationEntries, area);
+      
+      // Sort by escalation level: Direto first, then 1º, 2º, 3º, 4º
+      const sorted = [...onCall].sort((a, b) => {
+        const order = (nivel: string) => {
+          if (nivel.toLowerCase().includes('direto')) return 0;
+          if (nivel.includes('1')) return 1;
+          if (nivel.includes('2')) return 2;
+          if (nivel.includes('3')) return 3;
+          if (nivel.includes('4')) return 4;
+          return 5;
+        };
+        return order(a.nivel) - order(b.nivel);
+      });
+
+      return {
+        area,
+        isPrimary: area === primaryArea,
+        isDevOps: area === 'DEVOPS/CLOUD',
+        plantonistas: sorted.map(e => ({
+          nome: e.colaborador,
+          contato: e.contato,
+          cargo: e.cargo,
+          nivel: e.nivel,
+          horarioInicio: e.horarioInicio,
+          horarioFim: e.horarioFim,
+          is24h: e.is24h,
+        })),
+      };
+    });
+
+    res.json({
+      monitorId,
+      monitorName,
+      areas,
+      primaryArea,
+      responsibles,
+    });
+  });
+
+  // GET /api/areas/public — Listar áreas sem autenticação (para tela de registro)
+  if (deps.areaRepository) {
+    app.get('/api/areas/public', (_req: Request, res: Response) => {
+      const areas = deps.areaRepository!.getAll();
+      res.json(areas);
+    });
+  }
+
+  // GET /api/teams — Listar times com plantonista atual
+  app.get('/api/teams', (_req: Request, res: Response) => {
+    const teams = deps.teamRepository.getAll();
+    const result = teams.map((team) => {
+      const currentOnCall = deps.scheduleManager.getCurrentOnCall(team.id);
+      const escalationChain = deps.scheduleManager.getEscalationChain(team.id);
+      return {
+        teamId: team.id,
+        teamName: team.name,
+        displayOrder: team.displayOrder,
+        currentOnCall,
+        escalationChainConfigured: escalationChain.length > 0,
+      };
+    });
+    res.json(result);
+  });
+
+  // POST /api/teams — Criar novo time
+  app.post('/api/teams', (req: Request, res: Response) => {
+    const { id, name, displayOrder } = req.body || {};
+    if (!id || !name) {
+      res.status(400).json({ error: 'id e name são obrigatórios' });
+      return;
+    }
+    if (deps.teamRepository.exists(id)) {
+      res.status(400).json({ error: 'Time com este ID já existe' });
+      return;
+    }
+    const team = deps.teamRepository.create({ id, name, displayOrder: displayOrder || 99 });
+    res.status(201).json(team);
+  });
+
+  // PUT /api/teams/:id — Atualizar time
+  app.put('/api/teams/:id', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const team = deps.teamRepository.getById(id);
+    if (!team) {
+      res.status(404).json({ error: 'Time não encontrado' });
+      return;
+    }
+    const { name, displayOrder } = req.body || {};
+    const updated = deps.teamRepository.update(id, { name, displayOrder });
+    res.json(updated);
+  });
+
+  // DELETE /api/teams/:id — Deletar time
+  app.delete('/api/teams/:id', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const team = deps.teamRepository.getById(id);
+    if (!team) {
+      res.status(404).json({ error: 'Time não encontrado' });
+      return;
+    }
+    deps.teamRepository.delete(id);
+    res.json({ success: true });
+  });
+
+  // GET /api/teams/:id/escalation-chain — Cadeia de escalação
+  app.get('/api/teams/:id/escalation-chain', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const team = deps.teamRepository.getById(id);
+    if (!team) {
+      res.status(404).json({ error: 'Time não encontrado' });
+      return;
+    }
+    const chain = deps.scheduleManager.getEscalationChain(id);
+    res.json(chain);
+  });
+
+  // PUT /api/teams/:id/escalation-chain — Atualizar cadeia de escalação
+  app.put('/api/teams/:id/escalation-chain', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const team = deps.teamRepository.getById(id);
+    if (!team) {
+      res.status(404).json({ error: 'Time não encontrado' });
+      return;
+    }
+
+    const chain: EscalationChainMember[] = req.body;
+    if (!Array.isArray(chain)) {
+      res.status(400).json({ error: 'Body deve ser um array de membros da cadeia de escalação' });
+      return;
+    }
+
+    deps.scheduleManager.updateEscalationChain(id, chain);
+    res.json({ success: true });
+  });
+
+  // POST /api/schedules/import — Importar CSV (multipart/form-data)
+  app.post('/api/schedules/import', upload.single('file'), (req: Request, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ error: 'Nenhum arquivo enviado' });
+      return;
+    }
+
+    const csvContent = req.file.buffer.toString('utf-8');
+    const validationResult = deps.csvProcessor.parseAndValidate(csvContent);
+
+    if (!validationResult.isValid) {
+      res.status(422).json({
+        success: false,
+        errors: validationResult.errors,
+        conflicts: validationResult.conflicts,
+      });
+      return;
+    }
+
+    const importResult = deps.csvProcessor.importSchedule(validationResult.validEntries);
+    res.json(importResult);
+  });
+
+  // POST /api/escalation/import — Importar CSV de escalonamento (formato área → colaboradores → dias)
+  app.post('/api/escalation/import', upload.single('file'), async (req: Request, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ error: 'Nenhum arquivo enviado' });
+      return;
+    }
+
+    const csvContent = req.file.buffer.toString('utf-8');
+    const result = parseEscalationCSV(csvContent);
+
+    // Store in memory for on-call lookups
+    escalationEntries = result.entries;
+
+    // Persist to database
+    if (deps.db) {
+      const now = new Date();
+      const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+      const brasiliaDate = new Date(brasiliaStr);
+      const currentMonth = brasiliaDate.getMonth() + 1;
+      const currentYear = brasiliaDate.getFullYear();
+
+      // Clear existing entries for this month/year
+      deps.db.prepare('DELETE FROM escalation_schedules WHERE mes = ? AND ano = ?').run(currentMonth, currentYear);
+
+      // Insert all new entries
+      const insert = deps.db.prepare(
+        'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      );
+
+      const insertAll = deps.db.transaction(() => {
+        for (const entry of result.entries) {
+          insert.run(
+            entry.area,
+            entry.colaborador,
+            entry.cargo,
+            entry.nivel,
+            entry.contato,
+            entry.dia,
+            currentMonth,
+            currentYear,
+            entry.horarioInicio,
+            entry.horarioFim,
+            entry.is24h ? 1 : 0
+          );
+        }
+      });
+      insertAll();
+    }
+
+    // Auto-create areas and users from CSV data
+    let areasCreated = 0;
+    let usersCreated = 0;
+
+    if (deps.areaRepository && deps.userRepository) {
+      const areaRepo = deps.areaRepository;
+      const userRepo = deps.userRepository;
+      const bcrypt = require('bcrypt');
+
+      for (const parsedArea of result.areas) {
+        const areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+        const existingArea = areaRepo.getByCodigo(areaCodigo);
+        if (!existingArea) {
+          try {
+            areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null });
+            areasCreated++;
+          } catch { /* skip */ }
+        }
+
+        for (const colab of parsedArea.colaboradores) {
+          if (!colab.nome || colab.nome === 'xxxxx') continue;
+
+          const username = colab.nome.toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]/g, '.')
+            .replace(/\.+/g, '.').replace(/^\.|\.$/, '')
+            .substring(0, 30);
+
+          const existing = userRepo.getByUsername(username);
+          if (!existing) {
+            const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+            const senhaHash = bcrypt.hashSync('plantonista123', 10);
+            try {
+              userRepo.create({
+                codigo,
+                areaCodigo,
+                nome: colab.nome,
+                perfil: 'Plantonista',
+                cargo: colab.cargo || null,
+                username,
+                senhaHash,
+              });
+              usersCreated++;
+            } catch { /* skip duplicates */ }
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      areas: result.areas.map(a => ({ nome: a.area, colaboradores: a.colaboradores.length })),
+      totalEntries: result.entries.length,
+      areasCreated,
+      usersCreated,
+      errors: result.errors,
+    });
+  });
+
+  // GET /api/escalation/on-call — Quem está de plantão hoje (por área)
+  app.get('/api/escalation/on-call', (_req: Request, res: Response) => {
+    // Use only areas from the escalation CSV data (avoids duplicates with DB)
+    // Deduplicate by normalized name
+    const { normalizeForComparison } = require('./services/escalation-csv-processor');
+    const seenNormalized = new Set<string>();
+    const entryAreas: string[] = [];
+    
+    for (const entry of escalationEntries) {
+      const norm = normalizeForComparison(entry.area);
+      if (!seenNormalized.has(norm)) {
+        seenNormalized.add(norm);
+        entryAreas.push(entry.area);
+      }
+    }
+
+    if (entryAreas.length === 0) {
+      if (deps.areaRepository) {
+        const dbAreas = deps.areaRepository.getAll();
+        res.json(dbAreas.map(a => ({ area: a.nome, plantonistas: [] })));
+        return;
+      }
+      res.json([]);
+      return;
+    }
+
+    const result = entryAreas.map(area => {
+      const onCall = getCurrentOnCallForArea(escalationEntries, area);
+      const areaNorm = normalizeForComparison(area);
+      
+      if (onCall.length > 0) {
+        // Tem plantonista hoje — mostra quem está escalado
+        return {
+          area,
+          temPlantonista: true,
+          plantonistas: onCall.map(e => ({
+            nome: e.colaborador,
+            cargo: e.cargo,
+            nivel: e.nivel,
+            contato: e.contato,
+            horarioInicio: e.horarioInicio,
+            horarioFim: e.horarioFim,
+            is24h: e.is24h,
+          })),
+        };
+      } else {
+        // Sem plantonista hoje — mostra toda a equipe da área
+        const allTeamMembers = escalationEntries
+          .filter(e => normalizeForComparison(e.area) === areaNorm)
+          .reduce((acc, e) => {
+            if (!acc.find(m => m.nome === e.colaborador)) {
+              acc.push({
+                nome: e.colaborador,
+                cargo: e.cargo,
+                nivel: e.nivel,
+                contato: e.contato,
+                horarioInicio: '',
+                horarioFim: '',
+                is24h: false,
+              });
+            }
+            return acc;
+          }, [] as any[]);
+
+        return {
+          area,
+          temPlantonista: false,
+          plantonistas: allTeamMembers,
+        };
+      }
+    });
+    res.json(result);
+  });
+
+  // GET /api/escalation/areas — Listar áreas do escalonamento importado
+  app.get('/api/escalation/areas', (_req: Request, res: Response) => {
+    const areas = [...new Set(escalationEntries.map(e => e.area))];
+    res.json(areas);
+  });
+
+  // GET /api/escalation/template — Download do template CSV
+  app.get('/api/escalation/template', (_req: Request, res: Response) => {
+    const fs = require('fs');
+    const path = require('path');
+    const templatePath = path.join(process.cwd(), 'templates', 'Template_Escalonamento.csv');
+    if (fs.existsSync(templatePath)) {
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=Template_Escalonamento.csv');
+      res.sendFile(templatePath);
+    } else {
+      res.status(404).json({ error: 'Template não encontrado' });
+    }
+  });
+
+  // GET /api/incidents — Histórico com filtros (query params)
+  app.get('/api/incidents', (req: Request, res: Response) => {
+    const filters: HistoryFilters = {};
+
+    if (req.query.teamId && typeof req.query.teamId === 'string') {
+      filters.teamId = req.query.teamId;
+    }
+    if (req.query.startDate && typeof req.query.startDate === 'string') {
+      filters.startDate = req.query.startDate;
+    }
+    if (req.query.endDate && typeof req.query.endDate === 'string') {
+      filters.endDate = req.query.endDate;
+    }
+    if (req.query.status && typeof req.query.status === 'string') {
+      filters.status = req.query.status as HistoryFilters['status'];
+    }
+
+    const incidents = deps.incidentHistoryService.queryHistory(filters);
+    res.json(incidents);
+  });
+
+  // POST /api/incidents/:id/acknowledge — Confirmar atendimento
+  app.post('/api/incidents/:id/acknowledge', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { personId } = req.body || {};
+
+    if (!personId) {
+      res.status(400).json({ error: 'personId é obrigatório' });
+      return;
+    }
+
+    deps.escalationEngine.acknowledgeIncident(id, personId);
+    res.json({ success: true, incidentId: id });
+  });
+
+  // GET /api/monitor-mappings — Listar mapeamentos
+  app.get('/api/monitor-mappings', (_req: Request, res: Response) => {
+    const monitors = deps.datadogPollingService.getMonitors();
+    const unmapped = deps.monitorMappingService.getUnmappedMonitors(monitors);
+    const teams = deps.teamRepository.getAll();
+
+    const mappingsByTeam: Record<string, any[]> = {};
+    for (const team of teams) {
+      mappingsByTeam[team.id] = deps.monitorMappingService.getMappingsForTeam(team.id);
+    }
+
+    res.json({
+      mappings: mappingsByTeam,
+      unmapped,
+    });
+  });
+
+  // PUT /api/monitor-mappings/:monitorId — Associar monitor a time
+  app.put('/api/monitor-mappings/:monitorId', (req: Request, res: Response) => {
+    const monitorId = parseInt(req.params.monitorId, 10);
+    if (isNaN(monitorId)) {
+      res.status(400).json({ error: 'monitorId deve ser um número válido' });
+      return;
+    }
+
+    const { teamId, monitorName } = req.body || {};
+    if (!teamId) {
+      res.status(400).json({ error: 'teamId é obrigatório' });
+      return;
+    }
+
+    const team = deps.teamRepository.getById(teamId);
+    if (!team) {
+      res.status(404).json({ error: 'Time não encontrado' });
+      return;
+    }
+
+    deps.monitorMappingService.setMonitorTeamMapping(
+      monitorId,
+      teamId,
+      monitorName || `Monitor ${monitorId}`
+    );
+    res.json({ success: true, monitorId, teamId });
+  });
+
+  // === Auth Routes (no authentication required) ===
+
+  if (deps.authService) {
+    const authService = deps.authService;
+
+    // POST /api/auth/login — Autenticar usuário e retornar token
+    app.post('/api/auth/login', async (req: Request, res: Response) => {
+      const { username, senha } = req.body || {};
+      if (!username || !senha) {
+        res.status(400).json({ error: 'username e senha são obrigatórios' });
+        return;
+      }
+      const result = await authService.login(username, senha);
+      if (!result.success) {
+        res.status(401).json({ error: result.error });
+        return;
+      }
+      res.json({ token: result.token, user: result.user });
+    });
+
+    // POST /api/auth/register — Cadastrar novo usuário
+    app.post('/api/auth/register', async (req: Request, res: Response) => {
+      const { codigo, areaCodigo, nome, perfil, cargo, username, senha } = req.body || {};
+      if (!codigo || !nome || !perfil || !username || !senha) {
+        res.status(400).json({ error: 'codigo, nome, perfil, username e senha são obrigatórios' });
+        return;
+      }
+      const result = await authService.register({ codigo, areaCodigo, nome, perfil, cargo, username, senha });
+      if (!result.success) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.status(201).json({ user: result.user });
+    });
+
+    // === Protected Routes (require auth middleware) ===
+    const authMiddleware = createAuthMiddleware(authService);
+
+    // GET /api/auth/me — Retornar dados do usuário logado
+    app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
+      if (!deps.userRepository) {
+        res.status(500).json({ error: 'User repository not available' });
+        return;
+      }
+      const user = deps.userRepository.getById(req.user!.userId);
+      if (!user) {
+        res.status(404).json({ error: 'Usuário não encontrado' });
+        return;
+      }
+      const { senhaHash, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
+    });
+
+    // POST /api/auth/select-area — Selecionar área de responsabilidade após login
+    app.post('/api/auth/select-area', authMiddleware, (req: Request, res: Response) => {
+      const { areaCodigo } = req.body || {};
+      if (!areaCodigo) {
+        res.status(400).json({ error: 'areaCodigo é obrigatório' });
+        return;
+      }
+
+      const { perfil, areaCodigo: userArea } = req.user!;
+
+      // Adm can select any area
+      if (perfil === 'Adm') {
+        res.json({ success: true, selectedArea: areaCodigo });
+        return;
+      }
+
+      // Responsavel can only select their own area
+      if (perfil === 'Responsavel') {
+        if (areaCodigo !== userArea) {
+          res.status(403).json({ error: 'Você só pode selecionar sua própria área de responsabilidade' });
+          return;
+        }
+        res.json({ success: true, selectedArea: areaCodigo });
+        return;
+      }
+
+      // Plantonista can only see their own area
+      if (perfil === 'Plantonista') {
+        if (areaCodigo !== userArea) {
+          res.status(403).json({ error: 'Você só pode visualizar sua própria área' });
+          return;
+        }
+        res.json({ success: true, selectedArea: areaCodigo });
+        return;
+      }
+
+      res.status(403).json({ error: 'Perfil não reconhecido' });
+    });
+
+    // GET /api/dashboard/data — Retornar dados filtrados por área selecionada
+    app.get('/api/dashboard/data', authMiddleware, areaFilterMiddleware, (req: Request, res: Response) => {
+      const areaFilter = getEffectiveAreaFilter(req);
+
+      // Return the effective area filter and user context for the frontend
+      res.json({
+        selectedArea: areaFilter,
+        perfil: req.user!.perfil,
+        accessLevel: req.user!.perfil === 'Adm' ? 'full' :
+                     req.user!.perfil === 'Responsavel' ? 'area' : 'readonly',
+      });
+    });
+
+    // === User CRUD Routes ===
+
+    if (deps.userRepository) {
+      const userRepository = deps.userRepository;
+
+      // GET /api/users — Listar usuários (admin and responsavel)
+      app.get('/api/users', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (req: Request, res: Response) => {
+        let users = userRepository.getAll();
+        // Responsavel only sees users from their area
+        if (req.user!.perfil === 'Responsavel' && req.user!.areaCodigo) {
+          users = users.filter(u => u.areaCodigo === req.user!.areaCodigo);
+        }
+        const usersWithoutPassword = users.map(({ senhaHash, ...u }) => u);
+        res.json(usersWithoutPassword);
+      });
+
+      // POST /api/users — Criar usuário (admin only)
+      app.post('/api/users', authMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
+        const { codigo, areaCodigo, nome, perfil, cargo, username, senha } = req.body || {};
+        if (!codigo || !nome || !perfil || !username || !senha) {
+          res.status(400).json({ error: 'codigo, nome, perfil, username e senha são obrigatórios' });
+          return;
+        }
+        const result = await authService.register({ codigo, areaCodigo, nome, perfil, cargo, username, senha });
+        if (!result.success) {
+          res.status(400).json({ error: result.error });
+          return;
+        }
+        res.status(201).json({ user: result.user });
+      });
+
+      // PUT /api/users/:id — Editar usuário
+      app.put('/api/users/:id', authMiddleware, (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = userRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Usuário não encontrado' });
+          return;
+        }
+        const { codigo, areaCodigo, nome, perfil, cargo, username } = req.body || {};
+        const updated = userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, username });
+        if (!updated) {
+          res.status(500).json({ error: 'Erro ao atualizar usuário' });
+          return;
+        }
+        const { senhaHash, ...userWithoutPassword } = updated;
+        res.json(userWithoutPassword);
+      });
+
+      // DELETE /api/users/:id — Deletar usuário (admin only)
+      app.delete('/api/users/:id', authMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = userRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Usuário não encontrado' });
+          return;
+        }
+        userRepository.delete(id);
+        res.json({ success: true });
+      });
+    }
+
+    // === Area CRUD Routes ===
+
+    if (deps.areaRepository) {
+      const areaRepository = deps.areaRepository;
+
+      // GET /api/areas — Listar áreas cadastradas
+      app.get('/api/areas', authMiddleware, (_req: Request, res: Response) => {
+        const areas = areaRepository.getAll();
+        res.json(areas);
+      });
+
+      // POST /api/areas — Criar nova área (admin only)
+      app.post('/api/areas', authMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+        const { codigo, nome, torre } = req.body || {};
+        if (!codigo || !nome) {
+          res.status(400).json({ error: 'codigo e nome são obrigatórios' });
+          return;
+        }
+        const area = areaRepository.create({ codigo, nome, torre: torre || null });
+        res.status(201).json(area);
+      });
+
+      // PUT /api/areas/:id — Editar área
+      app.put('/api/areas/:id', authMiddleware, (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = areaRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Área não encontrada' });
+          return;
+        }
+        const { codigo, nome, torre } = req.body || {};
+        const updated = areaRepository.update(id, { codigo, nome, torre });
+        res.json(updated);
+      });
+
+      // DELETE /api/areas/:id — Deletar área (admin only)
+      app.delete('/api/areas/:id', authMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = areaRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Área não encontrada' });
+          return;
+        }
+        areaRepository.delete(id);
+        res.json({ success: true });
+      });
+    }
+
+    // === Periodo CRUD Routes ===
+
+    if (deps.periodoRepository) {
+      const periodoRepository = deps.periodoRepository;
+
+      // GET /api/periodos — Listar períodos (opcionalmente por área, filtrado por perfil)
+      app.get('/api/periodos', authMiddleware, areaFilterMiddleware, (req: Request, res: Response) => {
+        const areaCodigo = req.query.areaCodigo as string | undefined;
+        const effectiveArea = getEffectiveAreaFilter(req);
+
+        if (areaCodigo) {
+          // If user specifies area filter, validate against their access
+          if (effectiveArea && areaCodigo !== effectiveArea) {
+            res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
+            return;
+          }
+          const periodos = periodoRepository.getByArea(areaCodigo);
+          res.json(periodos);
+        } else if (effectiveArea) {
+          // Non-admin users get filtered by their area
+          const periodos = periodoRepository.getByArea(effectiveArea);
+          res.json(periodos);
+        } else {
+          const periodos = periodoRepository.getAll();
+          res.json(periodos);
+        }
+      });
+
+      // POST /api/periodos — Criar período
+      app.post('/api/periodos', authMiddleware, (req: Request, res: Response) => {
+        const { codigo, data, horarios, areaCodigo } = req.body || {};
+        if (!codigo || !data || !horarios || !areaCodigo) {
+          res.status(400).json({ error: 'codigo, data, horarios e areaCodigo são obrigatórios' });
+          return;
+        }
+        const periodo = periodoRepository.create({ codigo, data, horarios, areaCodigo });
+        res.status(201).json(periodo);
+      });
+
+      // PUT /api/periodos/:id — Editar período
+      app.put('/api/periodos/:id', authMiddleware, (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = periodoRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Período não encontrado' });
+          return;
+        }
+        const { codigo, data, horarios, areaCodigo } = req.body || {};
+        const updated = periodoRepository.update(id, { codigo, data, horarios, areaCodigo });
+        res.json(updated);
+      });
+
+      // DELETE /api/periodos/:id — Deletar período
+      app.delete('/api/periodos/:id', authMiddleware, (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = periodoRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Período não encontrado' });
+          return;
+        }
+        periodoRepository.delete(id);
+        res.json({ success: true });
+      });
+    }
+
+    // === Escala CRUD Routes ===
+
+    if (deps.escalaRepository) {
+      const escalaRepository = deps.escalaRepository;
+
+      // GET /api/escalas — Listar escalas (opcionalmente por área, filtrado por perfil)
+      app.get('/api/escalas', authMiddleware, areaFilterMiddleware, (req: Request, res: Response) => {
+        const areaCodigo = req.query.areaCodigo as string | undefined;
+        const effectiveArea = getEffectiveAreaFilter(req);
+
+        if (areaCodigo) {
+          // If user specifies area filter, validate against their access
+          if (effectiveArea && areaCodigo !== effectiveArea) {
+            res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
+            return;
+          }
+          const escalas = escalaRepository.getByArea(areaCodigo);
+          res.json(escalas);
+        } else if (effectiveArea) {
+          // Non-admin users get filtered by their area
+          const escalas = escalaRepository.getByArea(effectiveArea);
+          res.json(escalas);
+        } else {
+          const escalas = escalaRepository.getAll();
+          res.json(escalas);
+        }
+      });
+
+      // POST /api/escalas — Criar escala (vincular área + período + plantonista)
+      app.post('/api/escalas', authMiddleware, (req: Request, res: Response) => {
+        const { codigo, areaCodigo, periodoCodigo, usuarioCodigo } = req.body || {};
+        if (!codigo || !areaCodigo || !periodoCodigo || !usuarioCodigo) {
+          res.status(400).json({ error: 'codigo, areaCodigo, periodoCodigo e usuarioCodigo são obrigatórios' });
+          return;
+        }
+        const escala = escalaRepository.create({ codigo, areaCodigo, periodoCodigo, usuarioCodigo });
+        res.status(201).json(escala);
+      });
+
+      // PUT /api/escalas/:id — Editar escala
+      app.put('/api/escalas/:id', authMiddleware, (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = escalaRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Escala não encontrada' });
+          return;
+        }
+        const { codigo, areaCodigo, periodoCodigo, usuarioCodigo } = req.body || {};
+        const updated = escalaRepository.update(id, { codigo, areaCodigo, periodoCodigo, usuarioCodigo });
+        res.json(updated);
+      });
+
+      // DELETE /api/escalas/:id — Deletar escala
+      app.delete('/api/escalas/:id', authMiddleware, (req: Request, res: Response) => {
+        const id = parseInt(req.params.id, 10);
+        if (isNaN(id)) {
+          res.status(400).json({ error: 'ID inválido' });
+          return;
+        }
+        const existing = escalaRepository.getById(id);
+        if (!existing) {
+          res.status(404).json({ error: 'Escala não encontrada' });
+          return;
+        }
+        escalaRepository.delete(id);
+        res.json({ success: true });
+      });
+    }
+  }
+
+  return app;
+}
