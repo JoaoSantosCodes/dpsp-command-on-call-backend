@@ -81,6 +81,51 @@ export class PeriodoRepository {
     return result.changes > 0;
   }
 
+  /**
+   * Auto-generate a unique periodo code.
+   * Format: PER-{AREA_SHORT}-{YYYYMMDD}-{SEQ}
+   * AREA_SHORT = first 8 chars of areaCodigo (uppercase)
+   * SEQ = zero-padded 3-digit sequence number
+   */
+  generateCode(areaCodigo: string, data: string): string {
+    const areaShort = areaCodigo.substring(0, 8).toUpperCase();
+    const dateStr = data.replace(/-/g, ''); // YYYY-MM-DD -> YYYYMMDD
+
+    const prefix = `PER-${areaShort}-${dateStr}-`;
+
+    // Find existing codes with same prefix to determine next sequence
+    const stmt = this.db.prepare(
+      `SELECT codigo FROM periodos WHERE codigo LIKE ? ORDER BY codigo DESC LIMIT 1`
+    );
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = stmt.get(`${prefix}%`) as { codigo: string } | undefined;
+      let seq = 1;
+
+      if (existing) {
+        const lastSeqStr = existing.codigo.substring(prefix.length);
+        const lastSeq = parseInt(lastSeqStr, 10);
+        if (!isNaN(lastSeq)) {
+          seq = lastSeq + 1;
+        }
+      }
+
+      const code = `${prefix}${seq.toString().padStart(3, '0')}`;
+
+      // Verify no collision
+      const collision = this.getByCodigo(code);
+      if (!collision) {
+        return code;
+      }
+      // If collision, increment and retry
+      seq++;
+    }
+
+    // Fallback: use timestamp-based suffix
+    const fallbackSeq = Date.now() % 1000;
+    return `${prefix}${fallbackSeq.toString().padStart(3, '0')}`;
+  }
+
   private mapRow(row: any): Periodo {
     return {
       id: row.id,

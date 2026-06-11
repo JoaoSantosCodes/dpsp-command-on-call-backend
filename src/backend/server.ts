@@ -9,14 +9,16 @@ import { MonitorMappingService } from './services/monitor-mapping';
 import { IncidentHistoryService } from './services/incident-history';
 import { CSVProcessor } from './services/csv-processor';
 import { parseEscalationCSV, getCurrentOnCallForArea, EscalationEntry } from './services/escalation-csv-processor';
+import { normalizeForComparison } from './database/init';
 import { getAreasForMonitor, getPrimaryAreaForMonitor } from './services/monitor-area-mapping';
 import { AuthService } from './services/auth';
-import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, getEffectiveAreaFilter } from './middleware/auth';
+import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, createAreaFilterMiddleware, getEffectiveAreaFilter, getEffectiveAreas, writeBlockMiddleware } from './middleware/auth';
 import { TeamRepository } from './database/repositories/TeamRepository';
 import { UserRepository } from './database/repositories/UserRepository';
 import { AreaRepository } from './database/repositories/AreaRepository';
 import { PeriodoRepository } from './database/repositories/PeriodoRepository';
 import { EscalaRepository } from './database/repositories/EscalaRepository';
+import { UserAreaRepository } from './database/repositories/UserAreaRepository';
 import { EscalationChainMember, HistoryFilters } from '../shared/types';
 
 export interface ServerDependencies {
@@ -32,6 +34,7 @@ export interface ServerDependencies {
   areaRepository?: AreaRepository;
   periodoRepository?: PeriodoRepository;
   escalaRepository?: EscalaRepository;
+  userAreaRepository?: UserAreaRepository;
   db?: any; // SQLite database for escalation persistence
 }
 
@@ -285,7 +288,36 @@ export function createServer(deps: ServerDependencies): Express {
       return;
     }
 
-    deps.scheduleManager.updateEscalationChain(id, chain);
+    // Task 10.1: Auto-inject area's Responsável at position 2
+    // Find the area associated with this team via area filter or team area binding
+    let finalChain = [...chain];
+    if (deps.userRepository && deps.userAreaRepository) {
+      // Try to find a Responsável for the team's area
+      // The areaCodigo can be passed as a query param or derived from the request
+      const areaCodigo = req.query.areaCodigo as string | undefined;
+      if (areaCodigo) {
+        const allUsers = deps.userRepository.getAll();
+        const responsavel = allUsers.find(u => u.perfil === 'Responsavel' && u.areaCodigo === areaCodigo);
+        if (responsavel) {
+          // Remove any existing position 2 entry
+          finalChain = finalChain.filter(m => m.position !== 2);
+          // Insert Responsável at position 2
+          const responsavelMember: EscalationChainMember = {
+            personName: responsavel.nome,
+            personContact: responsavel.username,
+            position: 2,
+          };
+          // Rebuild chain with position 2 locked
+          const below2 = finalChain.filter(m => m.position < 2);
+          const above2 = finalChain.filter(m => m.position >= 2);
+          // Re-number above2 starting from position 3
+          const renumbered = above2.map((m, i) => ({ ...m, position: 3 + i }));
+          finalChain = [...below2, responsavelMember, ...renumbered];
+        }
+      }
+    }
+
+    deps.scheduleManager.updateEscalationChain(id, finalChain);
     res.json({ success: true });
   });
 
@@ -319,7 +351,24 @@ export function createServer(deps: ServerDependencies): Express {
       return;
     }
 
-    const csvContent = req.file.buffer.toString('utf-8');
+    // Task 3.1: Detect and strip UTF-8 BOM, with fallback to latin1
+    let csvContent: string;
+    const buffer = req.file.buffer;
+    // Try UTF-8 first
+    let decoded = buffer.toString('utf-8');
+    // Strip BOM if present
+    if (decoded.charCodeAt(0) === 0xFEFF) {
+      decoded = decoded.slice(1);
+    }
+    // Check for garbled characters indicating wrong encoding
+    const { hasGarbledCharacters } = require('./database/init');
+    if (hasGarbledCharacters(decoded)) {
+      // Fallback to latin1 decoding
+      csvContent = buffer.toString('latin1');
+    } else {
+      csvContent = decoded;
+    }
+
     const result = parseEscalationCSV(csvContent);
 
     // Store in memory for on-call lookups
@@ -371,9 +420,18 @@ export function createServer(deps: ServerDependencies): Express {
       const bcrypt = require('bcrypt');
 
       for (const parsedArea of result.areas) {
-        const areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
-        const existingArea = areaRepo.getByCodigo(areaCodigo);
-        if (!existingArea) {
+        // Task 3.2: Use normalized comparison to find existing areas
+        const allAreas = areaRepo.getAll();
+        const normalizedIncoming = normalizeForComparison(parsedArea.area);
+        const matchingArea = allAreas.find(
+          (a) => normalizeForComparison(a.nome) === normalizedIncoming || normalizeForComparison(a.codigo) === normalizedIncoming
+        );
+
+        let areaCodigo: string;
+        if (matchingArea) {
+          areaCodigo = matchingArea.codigo;
+        } else {
+          areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
           try {
             areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null });
             areasCreated++;
@@ -631,6 +689,10 @@ export function createServer(deps: ServerDependencies): Express {
 
     // === Protected Routes (require auth middleware) ===
     const authMiddleware = createAuthMiddleware(authService);
+    // Create DB-backed area filter middleware if userAreaRepository is available
+    const dbAreaFilterMiddleware = deps.userAreaRepository
+      ? createAreaFilterMiddleware(deps.userAreaRepository)
+      : areaFilterMiddleware;
 
     // GET /api/auth/me — Retornar dados do usuário logado
     app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
@@ -687,7 +749,7 @@ export function createServer(deps: ServerDependencies): Express {
     });
 
     // GET /api/dashboard/data — Retornar dados filtrados por área selecionada
-    app.get('/api/dashboard/data', authMiddleware, areaFilterMiddleware, (req: Request, res: Response) => {
+    app.get('/api/dashboard/data', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
       const areaFilter = getEffectiveAreaFilter(req);
 
       // Return the effective area filter and user context for the frontend
@@ -705,18 +767,19 @@ export function createServer(deps: ServerDependencies): Express {
       const userRepository = deps.userRepository;
 
       // GET /api/users — Listar usuários (admin and responsavel)
-      app.get('/api/users', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (req: Request, res: Response) => {
+      app.get('/api/users', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), dbAreaFilterMiddleware, (req: Request, res: Response) => {
         let users = userRepository.getAll();
-        // Responsavel only sees users from their area
-        if (req.user!.perfil === 'Responsavel' && req.user!.areaCodigo) {
-          users = users.filter(u => u.areaCodigo === req.user!.areaCodigo);
+        // Use effective areas for filtering
+        const effectiveAreas = getEffectiveAreas(req);
+        if (effectiveAreas !== null) {
+          users = users.filter(u => u.areaCodigo && effectiveAreas.includes(u.areaCodigo));
         }
         const usersWithoutPassword = users.map(({ senhaHash, ...u }) => u);
         res.json(usersWithoutPassword);
       });
 
       // POST /api/users — Criar usuário (admin only)
-      app.post('/api/users', authMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
+      app.post('/api/users', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
         const { codigo, areaCodigo, nome, perfil, cargo, username, senha } = req.body || {};
         if (!codigo || !nome || !perfil || !username || !senha) {
           res.status(400).json({ error: 'codigo, nome, perfil, username e senha são obrigatórios' });
@@ -731,7 +794,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // PUT /api/users/:id — Editar usuário
-      app.put('/api/users/:id', authMiddleware, (req: Request, res: Response) => {
+      app.put('/api/users/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -753,7 +816,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // DELETE /api/users/:id — Deletar usuário (admin only)
-      app.delete('/api/users/:id', authMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+      app.delete('/api/users/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -767,6 +830,66 @@ export function createServer(deps: ServerDependencies): Express {
         userRepository.delete(id);
         res.json({ success: true });
       });
+
+      // === User-Area Binding Routes ===
+
+      if (deps.userAreaRepository) {
+        const userAreaRepo = deps.userAreaRepository;
+
+        // GET /api/users/:id/areas — List linked areas for a user
+        app.get('/api/users/:id/areas', authMiddleware, (req: Request, res: Response) => {
+          const id = parseInt(req.params.id, 10);
+          if (isNaN(id)) {
+            res.status(400).json({ error: 'ID inválido' });
+            return;
+          }
+          const existing = userRepository.getById(id);
+          if (!existing) {
+            res.status(404).json({ error: 'Usuário não encontrado' });
+            return;
+          }
+          const areas = userAreaRepo.getAreasForUser(id);
+          res.json(areas);
+        });
+
+        // POST /api/users/:id/areas — Add area binding (Admin only)
+        app.post('/api/users/:id/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+          const id = parseInt(req.params.id, 10);
+          if (isNaN(id)) {
+            res.status(400).json({ error: 'ID inválido' });
+            return;
+          }
+          const existing = userRepository.getById(id);
+          if (!existing) {
+            res.status(404).json({ error: 'Usuário não encontrado' });
+            return;
+          }
+          const { areaCodigo } = req.body || {};
+          if (!areaCodigo) {
+            res.status(400).json({ error: 'areaCodigo é obrigatório' });
+            return;
+          }
+          userAreaRepo.addAreaBinding(id, areaCodigo);
+          res.status(201).json({ success: true, userId: id, areaCodigo });
+        });
+
+        // DELETE /api/users/:id/areas/:areaCodigo — Remove area binding (Admin only)
+        app.delete('/api/users/:id/areas/:areaCodigo', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+          const id = parseInt(req.params.id, 10);
+          if (isNaN(id)) {
+            res.status(400).json({ error: 'ID inválido' });
+            return;
+          }
+          const existing = userRepository.getById(id);
+          if (!existing) {
+            res.status(404).json({ error: 'Usuário não encontrado' });
+            return;
+          }
+          const { areaCodigo } = req.params;
+          userAreaRepo.removeAreaBinding(id, areaCodigo);
+          res.json({ success: true });
+        });
+      }
     }
 
     // === Area CRUD Routes ===
@@ -775,13 +898,17 @@ export function createServer(deps: ServerDependencies): Express {
       const areaRepository = deps.areaRepository;
 
       // GET /api/areas — Listar áreas cadastradas
-      app.get('/api/areas', authMiddleware, (_req: Request, res: Response) => {
-        const areas = areaRepository.getAll();
+      app.get('/api/areas', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
+        const effectiveAreas = getEffectiveAreas(req);
+        let areas = areaRepository.getAll();
+        if (effectiveAreas !== null) {
+          areas = areas.filter(a => effectiveAreas.includes(a.codigo));
+        }
         res.json(areas);
       });
 
       // POST /api/areas — Criar nova área (admin only)
-      app.post('/api/areas', authMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+      app.post('/api/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
         const { codigo, nome, torre } = req.body || {};
         if (!codigo || !nome) {
           res.status(400).json({ error: 'codigo e nome são obrigatórios' });
@@ -792,7 +919,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // PUT /api/areas/:id — Editar área
-      app.put('/api/areas/:id', authMiddleware, (req: Request, res: Response) => {
+      app.put('/api/areas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -809,7 +936,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // DELETE /api/areas/:id — Deletar área (admin only)
-      app.delete('/api/areas/:id', authMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+      app.delete('/api/areas/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -830,23 +957,104 @@ export function createServer(deps: ServerDependencies): Express {
     if (deps.periodoRepository) {
       const periodoRepository = deps.periodoRepository;
 
-      // GET /api/periodos — Listar períodos (opcionalmente por área, filtrado por perfil)
-      app.get('/api/periodos', authMiddleware, areaFilterMiddleware, (req: Request, res: Response) => {
+      // GET /api/periodos/calendar — Calendar data with day-by-day assignment status
+      app.get('/api/periodos/calendar', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
         const areaCodigo = req.query.areaCodigo as string | undefined;
-        const effectiveArea = getEffectiveAreaFilter(req);
+        const monthParam = req.query.month as string | undefined;
+        const yearParam = req.query.year as string | undefined;
+
+        if (!areaCodigo) {
+          res.status(400).json({ error: 'areaCodigo é obrigatório' });
+          return;
+        }
+
+        // Validate area access
+        const effectiveAreas = getEffectiveAreas(req);
+        if (effectiveAreas !== null && !effectiveAreas.includes(areaCodigo)) {
+          res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
+          return;
+        }
+
+        // Use current month/year if not provided
+        const now = new Date();
+        const month = monthParam ? parseInt(monthParam, 10) : now.getMonth() + 1;
+        const year = yearParam ? parseInt(yearParam, 10) : now.getFullYear();
+
+        if (isNaN(month) || month < 1 || month > 12 || isNaN(year)) {
+          res.status(400).json({ error: 'Mês ou ano inválido' });
+          return;
+        }
+
+        // Get all periodos for this area
+        const periodos = periodoRepository.getByArea(areaCodigo);
+
+        // Build a map of date -> periodo info
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const days: Array<{ date: string; hasAssignment: boolean; plantonista?: string; horarios?: string }> = [];
+
+        // Get escalas for this area (if escalaRepository is available)
+        const escalaRepo = deps.escalaRepository;
+        const userRepo = deps.userRepository;
+        const allEscalas = escalaRepo ? escalaRepo.getByArea(areaCodigo) : [];
+
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+          // Find periodos matching this date
+          const matchingPeriodos = periodos.filter(p => p.data === dateStr);
+
+          if (matchingPeriodos.length > 0) {
+            // Find escalas linked to these periodos
+            const periodoCodigos = matchingPeriodos.map(p => p.codigo);
+            const matchingEscalas = allEscalas.filter(e => periodoCodigos.includes(e.periodoCodigo));
+
+            if (matchingEscalas.length > 0 && userRepo) {
+              // Get the plantonista name from the first matching escala
+              const firstEscala = matchingEscalas[0];
+              const allUsers = userRepo.getAll();
+              const assignedUser = allUsers.find(u => u.codigo === firstEscala.usuarioCodigo);
+              days.push({
+                date: dateStr,
+                hasAssignment: true,
+                plantonista: assignedUser ? assignedUser.nome : firstEscala.usuarioCodigo,
+                horarios: matchingPeriodos[0].horarios,
+              });
+            } else {
+              // Periodo exists but no escala assignment
+              days.push({
+                date: dateStr,
+                hasAssignment: false,
+                horarios: matchingPeriodos[0].horarios,
+              });
+            }
+          } else {
+            days.push({
+              date: dateStr,
+              hasAssignment: false,
+            });
+          }
+        }
+
+        res.json({ days });
+      });
+
+      // GET /api/periodos — Listar períodos (opcionalmente por área, filtrado por perfil)
+      app.get('/api/periodos', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
+        const areaCodigo = req.query.areaCodigo as string | undefined;
+        const effectiveAreas = getEffectiveAreas(req);
 
         if (areaCodigo) {
           // If user specifies area filter, validate against their access
-          if (effectiveArea && areaCodigo !== effectiveArea) {
+          if (effectiveAreas !== null && !effectiveAreas.includes(areaCodigo)) {
             res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
             return;
           }
           const periodos = periodoRepository.getByArea(areaCodigo);
           res.json(periodos);
-        } else if (effectiveArea) {
-          // Non-admin users get filtered by their area
-          const periodos = periodoRepository.getByArea(effectiveArea);
-          res.json(periodos);
+        } else if (effectiveAreas !== null) {
+          // Non-admin users or Responsável get filtered by their areas
+          const allPeriodos = effectiveAreas.flatMap(area => periodoRepository.getByArea(area));
+          res.json(allPeriodos);
         } else {
           const periodos = periodoRepository.getAll();
           res.json(periodos);
@@ -854,18 +1062,20 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // POST /api/periodos — Criar período
-      app.post('/api/periodos', authMiddleware, (req: Request, res: Response) => {
+      app.post('/api/periodos', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const { codigo, data, horarios, areaCodigo } = req.body || {};
-        if (!codigo || !data || !horarios || !areaCodigo) {
-          res.status(400).json({ error: 'codigo, data, horarios e areaCodigo são obrigatórios' });
+        if (!data || !horarios || !areaCodigo) {
+          res.status(400).json({ error: 'data, horarios e areaCodigo são obrigatórios' });
           return;
         }
-        const periodo = periodoRepository.create({ codigo, data, horarios, areaCodigo });
+        // Auto-generate code if not provided (backwards compatible)
+        const finalCodigo = codigo || periodoRepository.generateCode(areaCodigo, data);
+        const periodo = periodoRepository.create({ codigo: finalCodigo, data, horarios, areaCodigo });
         res.status(201).json(periodo);
       });
 
       // PUT /api/periodos/:id — Editar período
-      app.put('/api/periodos/:id', authMiddleware, (req: Request, res: Response) => {
+      app.put('/api/periodos/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -882,7 +1092,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // DELETE /api/periodos/:id — Deletar período
-      app.delete('/api/periodos/:id', authMiddleware, (req: Request, res: Response) => {
+      app.delete('/api/periodos/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -904,22 +1114,22 @@ export function createServer(deps: ServerDependencies): Express {
       const escalaRepository = deps.escalaRepository;
 
       // GET /api/escalas — Listar escalas (opcionalmente por área, filtrado por perfil)
-      app.get('/api/escalas', authMiddleware, areaFilterMiddleware, (req: Request, res: Response) => {
+      app.get('/api/escalas', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
         const areaCodigo = req.query.areaCodigo as string | undefined;
-        const effectiveArea = getEffectiveAreaFilter(req);
+        const effectiveAreas = getEffectiveAreas(req);
 
         if (areaCodigo) {
           // If user specifies area filter, validate against their access
-          if (effectiveArea && areaCodigo !== effectiveArea) {
+          if (effectiveAreas !== null && !effectiveAreas.includes(areaCodigo)) {
             res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
             return;
           }
           const escalas = escalaRepository.getByArea(areaCodigo);
           res.json(escalas);
-        } else if (effectiveArea) {
-          // Non-admin users get filtered by their area
-          const escalas = escalaRepository.getByArea(effectiveArea);
-          res.json(escalas);
+        } else if (effectiveAreas !== null) {
+          // Non-admin users or Responsável get filtered by their areas
+          const allEscalas = effectiveAreas.flatMap(area => escalaRepository.getByArea(area));
+          res.json(allEscalas);
         } else {
           const escalas = escalaRepository.getAll();
           res.json(escalas);
@@ -927,7 +1137,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // POST /api/escalas — Criar escala (vincular área + período + plantonista)
-      app.post('/api/escalas', authMiddleware, (req: Request, res: Response) => {
+      app.post('/api/escalas', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const { codigo, areaCodigo, periodoCodigo, usuarioCodigo } = req.body || {};
         if (!codigo || !areaCodigo || !periodoCodigo || !usuarioCodigo) {
           res.status(400).json({ error: 'codigo, areaCodigo, periodoCodigo e usuarioCodigo são obrigatórios' });
@@ -938,7 +1148,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // PUT /api/escalas/:id — Editar escala
-      app.put('/api/escalas/:id', authMiddleware, (req: Request, res: Response) => {
+      app.put('/api/escalas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
@@ -955,7 +1165,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // DELETE /api/escalas/:id — Deletar escala
-      app.delete('/api/escalas/:id', authMiddleware, (req: Request, res: Response) => {
+      app.delete('/api/escalas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
         const id = parseInt(req.params.id, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });

@@ -631,3 +631,227 @@ describe('Auth and CRUD API Routes', () => {
     });
   });
 });
+
+import * as fc from 'fast-check';
+
+const FC_CONFIG = { numRuns: 100 };
+
+describe('Role-Based Access - Property-Based Tests', () => {
+  /**
+   * Property 1: Admin data access is unrestricted
+   * Admin requests without X-Selected-Area return all records.
+   *
+   * **Validates: Requirements 1.2, 9.1, 9.2**
+   */
+  it('Property 1: Admin requests without X-Selected-Area return all records', async () => {
+    const db = createTestDb();
+    const authService = new AuthService(db, 'test-secret');
+    const userRepository = new UserRepository(db);
+    const areaRepository = new AreaRepository(db);
+    const periodoRepository = new PeriodoRepository(db);
+    const escalaRepository = new EscalaRepository(db);
+
+    const baseDeps = createMockBaseDeps();
+    const app = createServer({
+      ...baseDeps,
+      authService,
+      userRepository,
+      areaRepository,
+      periodoRepository,
+      escalaRepository,
+    });
+
+    // Create admin
+    await authService.register({
+      codigo: 'ADM_P1',
+      nome: 'Admin P1',
+      perfil: 'Adm',
+      username: 'admin_p1',
+      senha: 'pass123',
+    });
+    const loginResult = await authService.login('admin_p1', 'pass123');
+    const adminToken = loginResult.token!;
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.integer({ min: 1, max: 5 }),
+        async (numAreas) => {
+          // Create N areas
+          for (let i = 0; i < numAreas; i++) {
+            try {
+              areaRepository.create({
+                codigo: `AREA_P1_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                nome: `Area P1 ${i}`,
+                torre: null,
+              });
+            } catch { /* ignore unique constraint */ }
+          }
+
+          // Admin queries areas without X-Selected-Area
+          const res = await request(app)
+            .get('/api/areas')
+            .set('Authorization', `Bearer ${adminToken}`);
+
+          expect(res.status).toBe(200);
+          expect(Array.isArray(res.body)).toBe(true);
+          // Admin should see ALL areas (at least numAreas)
+          expect(res.body.length).toBeGreaterThanOrEqual(numAreas);
+        }
+      ),
+      FC_CONFIG
+    );
+  }, 30000);
+
+  /**
+   * Property 2: Responsável requests return only data from linked areas
+   *
+   * **Validates: Requirements 2.3, 4.4, 10.4**
+   */
+  it('Property 2: Responsável filtered queries return only matching area data', async () => {
+    const db = createTestDb();
+    const authService = new AuthService(db, 'test-secret');
+    const userRepository = new UserRepository(db);
+    const areaRepository = new AreaRepository(db);
+    const periodoRepository = new PeriodoRepository(db);
+    const escalaRepository = new EscalaRepository(db);
+
+    const baseDeps = createMockBaseDeps();
+    const app = createServer({
+      ...baseDeps,
+      authService,
+      userRepository,
+      areaRepository,
+      periodoRepository,
+      escalaRepository,
+    });
+
+    // Create areas first
+    areaRepository.create({ codigo: 'RESP_AREA', nome: 'Resp Area', torre: null });
+    areaRepository.create({ codigo: 'OTHER_AREA', nome: 'Other Area', torre: null });
+
+    // Create Responsável
+    await authService.register({
+      codigo: 'RESP_P2',
+      areaCodigo: 'RESP_AREA',
+      nome: 'Responsavel P2',
+      perfil: 'Responsavel',
+      username: 'resp_p2',
+      senha: 'pass123',
+    });
+    const loginResult = await authService.login('resp_p2', 'pass123');
+    const respToken = loginResult.token!;
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.integer({ min: 1, max: 3 }),
+        async (numPeriodos) => {
+          // Create periodos in the Responsável's area
+          for (let i = 0; i < numPeriodos; i++) {
+            try {
+              periodoRepository.create({
+                codigo: `PER_RESP_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                data: '2024-06-15',
+                horarios: '08:00-16:00',
+                areaCodigo: 'RESP_AREA',
+              });
+            } catch { /* ignore unique */ }
+          }
+
+          // Create periodos in another area
+          try {
+            periodoRepository.create({
+              codigo: `PER_OTHER_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              data: '2024-06-15',
+              horarios: '08:00-16:00',
+              areaCodigo: 'OTHER_AREA',
+            });
+          } catch { /* ignore unique */ }
+
+          // Responsável queries periodos filtered by their area
+          const res = await request(app)
+            .get('/api/periodos?areaCodigo=RESP_AREA')
+            .set('Authorization', `Bearer ${respToken}`);
+
+          expect(res.status).toBe(200);
+          if (Array.isArray(res.body) && res.body.length > 0) {
+            // All returned periodos should belong to the queried area
+            for (const periodo of res.body) {
+              expect(periodo.areaCodigo).toBe('RESP_AREA');
+            }
+          }
+        }
+      ),
+      FC_CONFIG
+    );
+  }, 30000);
+
+  /**
+   * Property 3: Plantonista POST/PUT/DELETE requests return 403
+   *
+   * **Validates: Requirements 3.2, 4.3**
+   */
+  it('Property 3: Plantonista write requests are rejected with 403', async () => {
+    const db = createTestDb();
+    const authService = new AuthService(db, 'test-secret');
+    const userRepository = new UserRepository(db);
+    const areaRepository = new AreaRepository(db);
+    const periodoRepository = new PeriodoRepository(db);
+    const escalaRepository = new EscalaRepository(db);
+
+    const baseDeps = createMockBaseDeps();
+    const app = createServer({
+      ...baseDeps,
+      authService,
+      userRepository,
+      areaRepository,
+      periodoRepository,
+      escalaRepository,
+    });
+
+    // Create Plantonista
+    await authService.register({
+      codigo: 'PLAN_P3',
+      nome: 'Plantonista P3',
+      perfil: 'Plantonista',
+      username: 'plan_p3',
+      senha: 'pass123',
+    });
+    const loginResult = await authService.login('plan_p3', 'pass123');
+    const planToken = loginResult.token!;
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom(
+          { method: 'post' as const, path: '/api/areas', body: { codigo: 'X', nome: 'X' } },
+          { method: 'post' as const, path: '/api/users', body: { codigo: 'X', nome: 'X', perfil: 'Plantonista', username: 'xtest', senha: 'x' } },
+          { method: 'put' as const, path: '/api/areas/1', body: { nome: 'X' } },
+          { method: 'delete' as const, path: '/api/areas/1', body: {} },
+          { method: 'post' as const, path: '/api/periodos', body: { data: '2024-01-01', horarios: '08:00', areaCodigo: 'X' } },
+          { method: 'delete' as const, path: '/api/users/1', body: {} }
+        ),
+        async (endpoint) => {
+          let res;
+          if (endpoint.method === 'post') {
+            res = await request(app)
+              .post(endpoint.path)
+              .set('Authorization', `Bearer ${planToken}`)
+              .send(endpoint.body);
+          } else if (endpoint.method === 'put') {
+            res = await request(app)
+              .put(endpoint.path)
+              .set('Authorization', `Bearer ${planToken}`)
+              .send(endpoint.body);
+          } else {
+            res = await request(app)
+              .delete(endpoint.path)
+              .set('Authorization', `Bearer ${planToken}`);
+          }
+
+          // Should be 403 Forbidden
+          expect(res.status).toBe(403);
+        }
+      ),
+      FC_CONFIG
+    );
+  }, 30000);
+});

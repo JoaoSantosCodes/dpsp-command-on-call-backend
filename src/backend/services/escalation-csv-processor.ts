@@ -236,3 +236,40 @@ export function getCurrentOnCallForArea(
     normalizeForComparison(e.area) === areaNorm && e.dia === currentDay
   );
 }
+
+
+/**
+ * Escape a CSV field value (wrap in quotes if it contains commas, quotes, or newlines).
+ */
+function escapeCSVField(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+/**
+ * Format escalation entries as a valid CSV string with UTF-8 encoding.
+ * Headers: Area,Colaborador,Cargo,Nivel,Contato,Dia,HorarioInicio,HorarioFim,Is24h
+ */
+export function formatEscalationCSV(entries: EscalationEntry[]): string {
+  const headers = ['Area', 'Colaborador', 'Cargo', 'Nivel', 'Contato', 'Dia', 'HorarioInicio', 'HorarioFim', 'Is24h'];
+  const lines: string[] = [headers.join(',')];
+
+  for (const entry of entries) {
+    const row = [
+      escapeCSVField(entry.area),
+      escapeCSVField(entry.colaborador),
+      escapeCSVField(entry.cargo),
+      escapeCSVField(entry.nivel),
+      escapeCSVField(entry.contato),
+      String(entry.dia),
+      entry.horarioInicio,
+      entry.horarioFim,
+      entry.is24h ? '1' : '0',
+    ];
+    lines.push(row.join(','));
+  }
+
+  return lines.join('\n');
+}

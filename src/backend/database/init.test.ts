@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { initializeDatabase, TEAMS_SEED } from './init';
+import { initializeDatabase, TEAMS_SEED, normalizeForComparison, deduplicateAreas } from './init';
 
 describe('Database Initialization', () => {
   let db: Database.Database;
@@ -380,5 +380,129 @@ describe('Database Initialization', () => {
         ).run();
       }).toThrow();
     });
+  });
+});
+
+describe('Area Deduplication', () => {
+  let db: Database.Database;
+
+  afterEach(() => {
+    if (db && db.open) {
+      db.close();
+    }
+  });
+
+  it('should remove duplicate areas with garbled encoding after initialization', () => {
+    db = initializeDatabase(':memory:');
+
+    // Insert garbled duplicates (simulating CSV-imported entries with broken chars)
+    db.prepare(
+      "INSERT INTO areas (codigo, nome, torre) VALUES ('TORRE_SOLUCOES_DE_SAUDE_DUP', 'TORRE SOLU◆◆ES DE SA◆DE', null)"
+    ).run();
+    db.prepare(
+      "INSERT INTO areas (codigo, nome, torre) VALUES ('SEGURANCA_DA_INFORMACAO_DUP', 'SEGURAN◆A DA INFORMA◆◆O', null)"
+    ).run();
+
+    // Run deduplication
+    deduplicateAreas(db);
+
+    // Garbled duplicates should be removed
+    const areas = db.prepare('SELECT codigo FROM areas').all() as { codigo: string }[];
+    const codigos = areas.map((a) => a.codigo);
+    expect(codigos).not.toContain('TORRE_SOLUCOES_DE_SAUDE_DUP');
+    expect(codigos).not.toContain('SEGURANCA_DA_INFORMACAO_DUP');
+  });
+
+  it('should keep canonical AREAS_SEED entries intact', () => {
+    db = initializeDatabase(':memory:');
+
+    // Insert a garbled duplicate
+    db.prepare(
+      "INSERT INTO areas (codigo, nome, torre) VALUES ('DEVOPS_CLOUD_DUP', 'DEVOPS CLOUD', null)"
+    ).run();
+
+    deduplicateAreas(db);
+
+    // Canonical entry should still exist
+    const canonical = db.prepare("SELECT * FROM areas WHERE codigo = 'DEVOPS_CLOUD'").get() as {
+      codigo: string;
+      nome: string;
+    } | undefined;
+    expect(canonical).toBeDefined();
+    expect(canonical!.nome).toBe('DevOps/Cloud');
+  });
+
+  it('should not delete areas that do not match any canonical entry', () => {
+    db = initializeDatabase(':memory:');
+
+    // Insert a completely new area that doesn't match any canonical entry
+    db.prepare(
+      "INSERT INTO areas (codigo, nome, torre) VALUES ('NOVA_AREA', 'Uma Nova Área Qualquer', null)"
+    ).run();
+
+    deduplicateAreas(db);
+
+    const newArea = db.prepare("SELECT * FROM areas WHERE codigo = 'NOVA_AREA'").get();
+    expect(newArea).toBeDefined();
+  });
+
+  it('should handle case-insensitive matching for duplicates', () => {
+    db = initializeDatabase(':memory:');
+
+    // Insert an uppercase variant without special chars (simulating garbled encoding)
+    db.prepare(
+      "INSERT INTO areas (codigo, nome, torre) VALUES ('CMD_CENTER_DUP', 'command center', null)"
+    ).run();
+
+    deduplicateAreas(db);
+
+    // The uppercase/lowercase duplicate should be removed
+    const dup = db.prepare("SELECT * FROM areas WHERE codigo = 'CMD_CENTER_DUP'").get();
+    expect(dup).toBeUndefined();
+  });
+
+  it('should be idempotent (running twice does not error or change results)', () => {
+    db = initializeDatabase(':memory:');
+
+    // Insert a duplicate
+    db.prepare(
+      "INSERT INTO areas (codigo, nome, torre) VALUES ('REDES_DUP', 'Redes', null)"
+    ).run();
+
+    deduplicateAreas(db);
+    deduplicateAreas(db); // second call should be safe
+
+    const count = db.prepare('SELECT COUNT(*) as count FROM areas').get() as { count: number };
+    // Should have exactly 14 canonical areas
+    expect(count.count).toBe(14);
+  });
+});
+
+describe('normalizeForComparison', () => {
+  it('should lowercase, strip accents, and remove non-alphanumeric', () => {
+    expect(normalizeForComparison('Torre Soluções de Saúde')).toBe('torresolucoesdesaude');
+  });
+
+  it('should remove all non-alphanumeric characters including spaces and slashes', () => {
+    expect(normalizeForComparison('DevOps/Cloud')).toBe('devopscloud');
+  });
+
+  it('should remove special characters like ◆', () => {
+    expect(normalizeForComparison('TORRE SOLU◆◆ES DE SA◆DE')).toBe('torresoluesdesade');
+  });
+
+  it('should normalize accented Portuguese characters', () => {
+    expect(normalizeForComparison('Segurança da Informação')).toBe('segurancadainformacao');
+  });
+
+  it('should be case insensitive', () => {
+    expect(normalizeForComparison('Redes')).toBe(normalizeForComparison('REDES'));
+    expect(normalizeForComparison('Redes')).toBe(normalizeForComparison('redes'));
+  });
+
+  it('should produce the same result for properly-encoded and uppercase canonical names', () => {
+    expect(normalizeForComparison('Torre Soluções de Saúde')).toBe(
+      normalizeForComparison('TORRE SOLUÇÕES DE SAÚDE')
+    );
   });
 });

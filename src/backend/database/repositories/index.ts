@@ -7,3 +7,4 @@ export { UserRepository } from './UserRepository';
 export { AreaRepository } from './AreaRepository';
 export { PeriodoRepository } from './PeriodoRepository';
 export { EscalaRepository } from './EscalaRepository';
+export { UserAreaRepository } from './UserAreaRepository';
