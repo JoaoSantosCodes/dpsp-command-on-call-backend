@@ -8,6 +8,43 @@ import {
 } from '../../shared/types';
 import { ScheduleRepository } from '../database/repositories/ScheduleRepository';
 
+/**
+ * Detects the encoding of a buffer and decodes it to a UTF-8 string.
+ *
+ * Strategy:
+ * 1. Check for UTF-8 BOM (0xEF 0xBB 0xBF) → strip BOM and decode as UTF-8
+ * 2. Attempt UTF-8 decode and validate (check for replacement characters U+FFFD)
+ * 3. Fallback to latin1/Windows-1252 decoding
+ */
+export function detectAndDecodeBuffer(buffer: Buffer): string {
+  // Check for UTF-8 BOM
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    // Strip BOM and decode as UTF-8
+    return buffer.subarray(3).toString('utf-8');
+  }
+
+  // Try UTF-8 decode
+  const utf8Decoded = buffer.toString('utf-8');
+
+  // Validate UTF-8: check for replacement character (U+FFFD)
+  // which indicates invalid byte sequences were encountered
+  if (!utf8Decoded.includes('\uFFFD')) {
+    return utf8Decoded;
+  }
+
+  // Fallback to latin1/Windows-1252
+  const decoder = new TextDecoder('latin1');
+  return decoder.decode(buffer);
+}
+
+/**
+ * Validates that a string contains valid UTF-8 characters
+ * and does not contain garbled/replacement characters.
+ */
+export function isValidUtf8String(str: string): boolean {
+  return !str.includes('\uFFFD') && !str.includes('�');
+}
+
 // Column name aliases (supports both English and Portuguese headers)
 const COLUMN_ALIASES: Record<string, string[]> = {
   team_id: ['team_id', 'nome_time'],
@@ -37,6 +74,15 @@ export class CSVProcessor {
 
   constructor(scheduleRepository: ScheduleRepository) {
     this.scheduleRepository = scheduleRepository;
+  }
+
+  /**
+   * Parse and validate CSV from a Buffer, with automatic encoding detection.
+   * Handles UTF-8, UTF-8 with BOM, and latin1/Windows-1252.
+   */
+  parseAndValidateBuffer(buffer: Buffer): CSVValidationResult {
+    const csvContent = detectAndDecodeBuffer(buffer);
+    return this.parseAndValidate(csvContent);
   }
 
   parseAndValidate(csvContent: string): CSVValidationResult {

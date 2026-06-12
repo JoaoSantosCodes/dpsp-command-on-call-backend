@@ -81,6 +81,12 @@ export class PeriodoRepository {
     return result.changes > 0;
   }
 
+  deleteById(id: number): boolean {
+    const stmt = this.db.prepare('DELETE FROM periodos WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
   /**
    * Auto-generate a unique periodo code.
    * Format: PER-{AREA_SHORT}-{YYYYMMDD}-{SEQ}

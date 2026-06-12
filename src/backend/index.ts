@@ -7,6 +7,7 @@ import { client, v1 } from '@datadog/datadog-api-client';
 import { initializeDatabase } from './database/init';
 import {
   MonitorMappingRepository,
+  MonitorAreaMappingRepository,
   TeamRepository,
   ScheduleRepository,
   EscalationChainRepository,
@@ -23,6 +24,7 @@ import { MonitorMappingService } from './services/monitor-mapping';
 import { IncidentHistoryService } from './services/incident-history';
 import { CSVProcessor } from './services/csv-processor';
 import { AuthService } from './services/auth';
+import { runDeduplication } from './services/area-migration';
 import { CommandCenterWebSocket } from './websocket';
 import { createServer } from './server';
 import { MonitorState } from '../shared/types';
@@ -88,8 +90,16 @@ async function main(): Promise<void> {
   const db = initializeDatabase();
   console.log('[CommandCenter] Database initialized');
 
+  // 1.1 Run area deduplication migration
+  const migrationResult = runDeduplication(db);
+  console.log(
+    `[Migration] Area deduplication complete: ${migrationResult.duplicatesFound} duplicates found, ` +
+    `${migrationResult.duplicatesRemoved} removed, ${migrationResult.referencesReassigned} references reassigned`
+  );
+
   // 2. Create repository instances
   const monitorMappingRepository = new MonitorMappingRepository(db);
+  const monitorAreaMappingRepository = new MonitorAreaMappingRepository(db);
   const teamRepository = new TeamRepository(db);
   const scheduleRepository = new ScheduleRepository(db);
   const escalationChainRepository = new EscalationChainRepository(db);

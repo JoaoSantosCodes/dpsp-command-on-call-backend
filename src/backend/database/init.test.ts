@@ -54,7 +54,7 @@ describe('Database Initialization', () => {
   });
 
   describe('Table creation', () => {
-    it('should create all 10 tables', () => {
+    it('should create all 12 tables', () => {
       db = initializeDatabase(':memory:');
       const tables = db
         .prepare(
@@ -73,6 +73,8 @@ describe('Database Initialization', () => {
       expect(tableNames).toContain('users');
       expect(tableNames).toContain('periodos');
       expect(tableNames).toContain('escalas');
+      expect(tableNames).toContain('area_escalation_chains');
+      expect(tableNames).toContain('monitor_area_mapping');
     });
 
     it('should be idempotent (calling twice does not error)', () => {

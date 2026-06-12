@@ -63,6 +63,14 @@ function createMockDeps(): ServerDependencies {
         errors: [],
         conflicts: [],
       }),
+      parseAndValidateBuffer: vi.fn().mockReturnValue({
+        isValid: true,
+        validEntries: [
+          { teamId: 'team-1', personName: 'João', date: '2024-01-01', startTime: '08:00', endTime: '16:00' },
+        ],
+        errors: [],
+        conflicts: [],
+      }),
       importSchedule: vi.fn().mockReturnValue({
         success: true,
         importedCount: 1,
@@ -191,7 +199,7 @@ describe('Express Server - API Routes', () => {
     });
 
     it('should return 422 for invalid CSV', async () => {
-      (deps.csvProcessor.parseAndValidate as any).mockReturnValue({
+      (deps.csvProcessor.parseAndValidateBuffer as any).mockReturnValue({
         isValid: false,
         validEntries: [],
         errors: [{ line: 1, column: 'team_id', message: 'Colunas obrigatórias ausentes' }],

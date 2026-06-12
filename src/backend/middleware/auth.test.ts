@@ -92,6 +92,7 @@ function createMockBaseDeps(): Omit<ServerDependencies, 'authService' | 'userRep
     } as any,
     csvProcessor: {
       parseAndValidate: vi.fn(),
+      parseAndValidateBuffer: vi.fn(),
       importSchedule: vi.fn(),
     } as any,
     teamRepository: {

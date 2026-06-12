@@ -19,6 +19,8 @@ import { AreaRepository } from './database/repositories/AreaRepository';
 import { PeriodoRepository } from './database/repositories/PeriodoRepository';
 import { EscalaRepository } from './database/repositories/EscalaRepository';
 import { UserAreaRepository } from './database/repositories/UserAreaRepository';
+import { AreaEscalationChainRepository } from './database/repositories/AreaEscalationChainRepository';
+import { MonitorAreaMappingRepository } from './database/repositories/MonitorAreaMappingRepository';
 import { EscalationChainMember, HistoryFilters } from '../shared/types';
 
 export interface ServerDependencies {
@@ -35,6 +37,8 @@ export interface ServerDependencies {
   periodoRepository?: PeriodoRepository;
   escalaRepository?: EscalaRepository;
   userAreaRepository?: UserAreaRepository;
+  areaEscalationChainRepository?: AreaEscalationChainRepository;
+  monitorAreaMappingRepository?: MonitorAreaMappingRepository;
   db?: any; // SQLite database for escalation persistence
 }
 
@@ -328,8 +332,7 @@ export function createServer(deps: ServerDependencies): Express {
       return;
     }
 
-    const csvContent = req.file.buffer.toString('utf-8');
-    const validationResult = deps.csvProcessor.parseAndValidate(csvContent);
+    const validationResult = deps.csvProcessor.parseAndValidateBuffer(req.file.buffer);
 
     if (!validationResult.isValid) {
       res.status(422).json({
@@ -652,6 +655,103 @@ export function createServer(deps: ServerDependencies): Express {
     res.json({ success: true, monitorId, teamId });
   });
 
+  // === Monitor-Area Mapping Routes ===
+
+  if (deps.monitorAreaMappingRepository) {
+    const monitorAreaMappingRepo = deps.monitorAreaMappingRepository;
+
+    // PUT /api/monitor-area-mappings/:monitorId — Assign monitor to area
+    app.put('/api/monitor-area-mappings/:monitorId', writeBlockMiddleware, (req: Request, res: Response) => {
+      const monitorId = parseInt(req.params.monitorId, 10);
+      if (isNaN(monitorId)) {
+        res.status(400).json({ error: 'monitorId deve ser um número válido' });
+        return;
+      }
+
+      const { areaCodigo, monitorName } = req.body || {};
+      if (!areaCodigo) {
+        res.status(400).json({ error: 'areaCodigo é obrigatório' });
+        return;
+      }
+
+      // Validate that the area exists
+      if (deps.areaRepository) {
+        const area = deps.areaRepository.getByCodigo(areaCodigo);
+        if (!area) {
+          res.status(400).json({ error: 'Área não encontrada' });
+          return;
+        }
+      }
+
+      monitorAreaMappingRepo.setMapping(monitorId, areaCodigo, monitorName || `Monitor ${monitorId}`);
+      res.json({ success: true, monitorId, areaCodigo });
+    });
+
+    // GET /api/monitor-area-mappings — Get all monitor-area mappings
+    app.get('/api/monitor-area-mappings', (_req: Request, res: Response) => {
+      const mappings = monitorAreaMappingRepo.getAllMapped();
+      res.json(mappings);
+    });
+
+    // GET /api/dashboard/monitors-by-area — Monitors grouped by area
+    app.get('/api/dashboard/monitors-by-area', (_req: Request, res: Response) => {
+      const monitors = deps.datadogPollingService.getMonitors();
+      const manualMappings = monitorAreaMappingRepo.getAllMapped();
+
+      // Build a set of manually mapped monitor IDs
+      const manualMappedIds = new Set(manualMappings.map(m => m.monitorId));
+
+      // Group monitors by area
+      const areaGroups: Record<string, { areaCodigo: string; areaNome: string; monitors: typeof monitors }> = {};
+      const unassigned: typeof monitors = [];
+
+      for (const monitor of monitors) {
+        // Check manual mapping first
+        const manualMapping = manualMappings.find(m => m.monitorId === monitor.id);
+        if (manualMapping) {
+          const key = manualMapping.areaCodigo;
+          if (!areaGroups[key]) {
+            // Get area name from repository if available
+            let areaNome = manualMapping.areaCodigo;
+            if (deps.areaRepository) {
+              const area = deps.areaRepository.getByCodigo(manualMapping.areaCodigo);
+              if (area) areaNome = area.nome;
+            }
+            areaGroups[key] = { areaCodigo: key, areaNome, monitors: [] };
+          }
+          areaGroups[key].monitors.push(monitor);
+        } else {
+          // Fallback to auto-mapping
+          const primaryArea = getPrimaryAreaForMonitor(monitor.name);
+          if (primaryArea) {
+            // Try to find matching area codigo from area repository
+            let areaCodigo = primaryArea;
+            let areaNome = primaryArea;
+            if (deps.areaRepository) {
+              const allAreas = deps.areaRepository.getAll();
+              const matchedArea = allAreas.find(a =>
+                normalizeForComparison(a.nome) === normalizeForComparison(primaryArea)
+              );
+              if (matchedArea) {
+                areaCodigo = matchedArea.codigo;
+                areaNome = matchedArea.nome;
+              }
+            }
+            if (!areaGroups[areaCodigo]) {
+              areaGroups[areaCodigo] = { areaCodigo, areaNome, monitors: [] };
+            }
+            areaGroups[areaCodigo].monitors.push(monitor);
+          } else {
+            unassigned.push(monitor);
+          }
+        }
+      }
+
+      const groups = Object.values(areaGroups);
+      res.json({ groups, unassigned });
+    });
+  }
+
   // === Auth Routes (no authentication required) ===
 
   if (deps.authService) {
@@ -949,6 +1049,58 @@ export function createServer(deps: ServerDependencies): Express {
         }
         areaRepository.delete(id);
         res.json({ success: true });
+      });
+
+      // === Area Escalation Chain Routes ===
+
+      if (deps.areaEscalationChainRepository) {
+        const areaEscalationChainRepo = deps.areaEscalationChainRepository;
+
+        // GET /api/areas/:codigo/escalation-chain — Get escalation chain for an area
+        app.get('/api/areas/:codigo/escalation-chain', authMiddleware, (req: Request, res: Response) => {
+          const { codigo } = req.params;
+          const area = areaRepository.getByCodigo(codigo);
+          if (!area) {
+            res.status(404).json({ error: 'Área não encontrada' });
+            return;
+          }
+          const chain = areaEscalationChainRepo.getByArea(codigo);
+          res.json(chain);
+        });
+
+        // PUT /api/areas/:codigo/escalation-chain — Save escalation chain for an area
+        app.put('/api/areas/:codigo/escalation-chain', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+          const { codigo } = req.params;
+          const area = areaRepository.getByCodigo(codigo);
+          if (!area) {
+            res.status(404).json({ error: 'Área não encontrada' });
+            return;
+          }
+          const { chain } = req.body || {};
+          if (!Array.isArray(chain)) {
+            res.status(400).json({ error: 'Body deve conter um array "chain" de membros da cadeia de escalação' });
+            return;
+          }
+          areaEscalationChainRepo.replaceChain(codigo, chain);
+          res.json({ success: true });
+        });
+      }
+
+      // GET /api/areas/:codigo/users — Get all users in an area
+      app.get('/api/areas/:codigo/users', authMiddleware, (req: Request, res: Response) => {
+        const { codigo } = req.params;
+        const area = areaRepository.getByCodigo(codigo);
+        if (!area) {
+          res.status(404).json({ error: 'Área não encontrada' });
+          return;
+        }
+        if (deps.userRepository) {
+          const users = deps.userRepository.getByArea(codigo);
+          const usersWithoutPassword = users.map(({ senhaHash, ...u }) => u);
+          res.json(usersWithoutPassword);
+        } else {
+          res.json([]);
+        }
       });
     }
 

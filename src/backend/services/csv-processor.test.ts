@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { CSVProcessor } from './csv-processor';
+import { CSVProcessor, detectAndDecodeBuffer, isValidUtf8String } from './csv-processor';
 import { ScheduleRepository } from '../database/repositories/ScheduleRepository';
 import { initializeDatabase } from '../database/init';
 import { ScheduleEntry } from '../../shared/types';
@@ -340,5 +340,167 @@ team-alpha,Alice,2024-01-15,08:00,16:00`;
       expect(bravoStored).toHaveLength(1);
       expect(bravoStored[0].personName).toBe('Dave');
     });
+  });
+});
+
+describe('detectAndDecodeBuffer', () => {
+  it('should decode plain UTF-8 content correctly', () => {
+    const content = 'team_id,person_name,date,start_time,end_time\nTorre Soluções de Saúde,João,2024-01-15,08:00,16:00';
+    const buffer = Buffer.from(content, 'utf-8');
+
+    const result = detectAndDecodeBuffer(buffer);
+
+    expect(result).toBe(content);
+    expect(result).toContain('Soluções');
+    expect(result).toContain('Saúde');
+    expect(result).toContain('João');
+  });
+
+  it('should decode UTF-8 with BOM by stripping the BOM', () => {
+    const content = 'team_id,person_name,date,start_time,end_time\nTorre Soluções de Saúde,João,2024-01-15,08:00,16:00';
+    // UTF-8 BOM: 0xEF 0xBB 0xBF
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    const contentBuffer = Buffer.from(content, 'utf-8');
+    const buffer = Buffer.concat([bom, contentBuffer]);
+
+    const result = detectAndDecodeBuffer(buffer);
+
+    expect(result).toBe(content);
+    expect(result).not.toContain('\uFEFF'); // BOM character should be stripped
+    expect(result).toContain('Soluções');
+    expect(result).toContain('Saúde');
+  });
+
+  it('should decode latin1/Windows-1252 encoded content with Portuguese characters', () => {
+    // In latin1: ã = 0xE3, õ = 0xF5, ú = 0xFA, ç = 0xE7, é = 0xE9, á = 0xE1
+    // "Soluções de Saúde" in latin1
+    const latin1Content = 'team_id,person_name\nTorre Solu\xE7\xF5es de Sa\xFAde,Jo\xE3o';
+    const buffer = Buffer.from(latin1Content, 'latin1');
+
+    const result = detectAndDecodeBuffer(buffer);
+
+    expect(result).toContain('Soluções');
+    expect(result).toContain('Saúde');
+    expect(result).toContain('João');
+    expect(isValidUtf8String(result)).toBe(true);
+  });
+
+  it('should handle empty buffer', () => {
+    const buffer = Buffer.from('');
+
+    const result = detectAndDecodeBuffer(buffer);
+
+    expect(result).toBe('');
+  });
+
+  it('should handle ASCII-only content (no encoding ambiguity)', () => {
+    const content = 'team_id,person_name\nteam-alpha,Alice';
+    const buffer = Buffer.from(content, 'utf-8');
+
+    const result = detectAndDecodeBuffer(buffer);
+
+    expect(result).toBe(content);
+  });
+
+  it('should correctly decode latin1 content with multiple accented characters', () => {
+    // "Operação" has ã (0xE3) and ç (0xE7)
+    // "Logística" has í (0xED)
+    const latin1Content = 'Opera\xE7\xE3o,Log\xEDstica,Preven\xE7\xE3o';
+    const buffer = Buffer.from(latin1Content, 'latin1');
+
+    const result = detectAndDecodeBuffer(buffer);
+
+    expect(result).toContain('Operação');
+    expect(result).toContain('Logística');
+    expect(result).toContain('Prevenção');
+  });
+});
+
+describe('isValidUtf8String', () => {
+  it('should return true for valid UTF-8 strings with accented characters', () => {
+    expect(isValidUtf8String('Torre Soluções de Saúde')).toBe(true);
+    expect(isValidUtf8String('Operação')).toBe(true);
+    expect(isValidUtf8String('João')).toBe(true);
+  });
+
+  it('should return false for strings containing replacement character U+FFFD', () => {
+    expect(isValidUtf8String('Torre Solu\uFFFDes de Sa\uFFFDde')).toBe(false);
+  });
+
+  it('should return false for strings containing the visual garbled character', () => {
+    expect(isValidUtf8String('TORRE SOLU��ES DE SA�DE')).toBe(false);
+  });
+
+  it('should return true for empty string', () => {
+    expect(isValidUtf8String('')).toBe(true);
+  });
+
+  it('should return true for plain ASCII', () => {
+    expect(isValidUtf8String('Hello World')).toBe(true);
+  });
+});
+
+describe('CSVProcessor - parseAndValidateBuffer', () => {
+  let db: Database.Database;
+  let scheduleRepository: ScheduleRepository;
+  let csvProcessor: CSVProcessor;
+
+  beforeEach(() => {
+    db = initializeDatabase(':memory:');
+    scheduleRepository = new ScheduleRepository(db);
+    csvProcessor = new CSVProcessor(scheduleRepository);
+  });
+
+  it('should parse a UTF-8 encoded CSV buffer with Portuguese characters', () => {
+    const csv = 'team_id,person_name,person_contact,date,start_time,end_time\nTorre Soluções,João,joao@email.com,2024-01-15,08:00,16:00';
+    const buffer = Buffer.from(csv, 'utf-8');
+
+    const result = csvProcessor.parseAndValidateBuffer(buffer);
+
+    expect(result.isValid).toBe(true);
+    expect(result.validEntries).toHaveLength(1);
+    expect(result.validEntries[0].teamId).toBe('Torre Soluções');
+    expect(result.validEntries[0].personName).toBe('João');
+  });
+
+  it('should parse a UTF-8 BOM encoded CSV buffer', () => {
+    const csv = 'team_id,person_name,person_contact,date,start_time,end_time\nTorre Soluções,João,joao@email.com,2024-01-15,08:00,16:00';
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    const buffer = Buffer.concat([bom, Buffer.from(csv, 'utf-8')]);
+
+    const result = csvProcessor.parseAndValidateBuffer(buffer);
+
+    expect(result.isValid).toBe(true);
+    expect(result.validEntries).toHaveLength(1);
+    expect(result.validEntries[0].teamId).toBe('Torre Soluções');
+    expect(result.validEntries[0].personName).toBe('João');
+  });
+
+  it('should parse a latin1/Windows-1252 encoded CSV buffer with Portuguese characters', () => {
+    // Encode "Torre Soluções,João,joao@email.com,2024-01-15,08:00,16:00" in latin1
+    const header = 'team_id,person_name,person_contact,date,start_time,end_time\n';
+    const row = 'Torre Solu\xE7\xF5es,Jo\xE3o,joao@email.com,2024-01-15,08:00,16:00';
+    const buffer = Buffer.from(header + row, 'latin1');
+
+    const result = csvProcessor.parseAndValidateBuffer(buffer);
+
+    expect(result.isValid).toBe(true);
+    expect(result.validEntries).toHaveLength(1);
+    expect(result.validEntries[0].teamId).toBe('Torre Soluções');
+    expect(result.validEntries[0].personName).toBe('João');
+  });
+
+  it('should produce valid UTF-8 area names from any encoding', () => {
+    const header = 'team_id,person_name,person_contact,date,start_time,end_time\n';
+    const row = 'Torre Solu\xE7\xF5es de Sa\xFAde,Jo\xE3o Andr\xE9,joao@email.com,2024-01-15,08:00,16:00';
+    const buffer = Buffer.from(header + row, 'latin1');
+
+    const result = csvProcessor.parseAndValidateBuffer(buffer);
+
+    expect(result.isValid).toBe(true);
+    expect(isValidUtf8String(result.validEntries[0].teamId)).toBe(true);
+    expect(isValidUtf8String(result.validEntries[0].personName)).toBe(true);
+    expect(result.validEntries[0].teamId).toBe('Torre Soluções de Saúde');
+    expect(result.validEntries[0].personName).toBe('João André');
   });
 });

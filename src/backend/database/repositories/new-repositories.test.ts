@@ -46,15 +46,21 @@ describe('AreaRepository', () => {
   });
 
   it('gets all areas ordered by name', () => {
+    // DB already has seed areas; add 3 more and verify they are included
+    const seedCount = repo.getAll().length;
     repo.create({ codigo: 'B', nome: 'Beta', torre: null });
     repo.create({ codigo: 'A', nome: 'Alpha', torre: null });
     repo.create({ codigo: 'C', nome: 'Charlie', torre: null });
 
     const all = repo.getAll();
-    expect(all).toHaveLength(3);
-    expect(all[0].nome).toBe('Alpha');
-    expect(all[1].nome).toBe('Beta');
-    expect(all[2].nome).toBe('Charlie');
+    expect(all).toHaveLength(seedCount + 3);
+    const names = all.map(a => a.nome);
+    expect(names).toContain('Alpha');
+    expect(names).toContain('Beta');
+    expect(names).toContain('Charlie');
+    // Verify sorted alphabetically (SQLite ORDER BY nome)
+    const sorted = [...names].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    expect(names).toEqual(sorted);
   });
 
   it('updates an area', () => {
@@ -266,6 +272,16 @@ describe('PeriodoRepository', () => {
 
   it('returns false when deleting non-existent periodo', () => {
     expect(repo.delete(999)).toBe(false);
+  });
+
+  it('deletes a periodo by id using deleteById', () => {
+    const periodo = repo.create({ codigo: 'PER-002', data: '2024-04-01', horarios: '08:00-16:00', areaCodigo: 'AREA-01' });
+    expect(repo.deleteById(periodo.id)).toBe(true);
+    expect(repo.getById(periodo.id)).toBeUndefined();
+  });
+
+  it('returns false when deleteById targets non-existent periodo', () => {
+    expect(repo.deleteById(999)).toBe(false);
   });
 
   it('enforces unique codigo', () => {

@@ -138,6 +138,15 @@ export interface MonitorMapping {
   updatedAt: string;
 }
 
+/** Monitor-to-area mapping (area-based, replaces team-based for new workflow) */
+export interface MonitorAreaMapping {
+  monitorId: number;
+  areaCodigo: string;
+  monitorName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // === Escalation Record Types ===
 
 export interface EscalationRecord {

@@ -155,6 +155,29 @@ function createTables(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_user_areas_user ON user_areas(user_id);
     CREATE INDEX IF NOT EXISTS idx_user_areas_area ON user_areas(area_codigo);
+
+    -- Tb_Area_Escalation_Chains: Cadeia de escalonamento por área
+    CREATE TABLE IF NOT EXISTS area_escalation_chains (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      area_codigo TEXT NOT NULL REFERENCES areas(codigo),
+      person_name TEXT NOT NULL,
+      person_contact TEXT,
+      position INTEGER NOT NULL,
+      UNIQUE(area_codigo, position)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_area_esc_chain_area ON area_escalation_chains(area_codigo);
+
+    -- Tb_Monitor_Area_Mapping: Mapeamento manual de monitores para áreas
+    CREATE TABLE IF NOT EXISTS monitor_area_mapping (
+      monitor_id INTEGER PRIMARY KEY,
+      area_codigo TEXT NOT NULL REFERENCES areas(codigo),
+      monitor_name TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_monitor_area ON monitor_area_mapping(area_codigo);
   `);
 }
 
