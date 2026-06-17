@@ -11,11 +11,13 @@ import {
   TeamRepository,
   ScheduleRepository,
   EscalationChainRepository,
+  AreaEscalationChainRepository,
   IncidentRepository,
   UserRepository,
   AreaRepository,
   PeriodoRepository,
   EscalaRepository,
+  UserAreaRepository,
 } from './database/repositories';
 import { DatadogPollingService, DatadogClient } from './services/datadog-polling';
 import { EscalationEngine } from './services/escalation-engine';
@@ -103,11 +105,13 @@ async function main(): Promise<void> {
   const teamRepository = new TeamRepository(db);
   const scheduleRepository = new ScheduleRepository(db);
   const escalationChainRepository = new EscalationChainRepository(db);
+  const areaEscalationChainRepository = new AreaEscalationChainRepository(db);
   const incidentRepository = new IncidentRepository(db);
   const userRepository = new UserRepository(db);
   const areaRepository = new AreaRepository(db);
   const periodoRepository = new PeriodoRepository(db);
   const escalaRepository = new EscalaRepository(db);
+  const userAreaRepository = new UserAreaRepository(db);
 
   // 3. Create service instances
   const scheduleManager = new ScheduleManager(scheduleRepository, escalationChainRepository);
@@ -181,6 +185,9 @@ async function main(): Promise<void> {
     areaRepository,
     periodoRepository,
     escalaRepository,
+    areaEscalationChainRepository,
+    monitorAreaMappingRepository,
+    userAreaRepository,
     db,
   });
 

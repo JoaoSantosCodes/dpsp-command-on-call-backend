@@ -28,6 +28,7 @@ function createTestDb(): Database.Database {
       nome TEXT NOT NULL,
       perfil TEXT NOT NULL CHECK(perfil IN ('Adm', 'Responsavel', 'Plantonista')),
       cargo TEXT,
+      contato TEXT,
       username TEXT NOT NULL UNIQUE,
       senha_hash TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now')),
@@ -259,10 +260,10 @@ describe('Auth and CRUD API Routes', () => {
         .get('/api/users')
         .set('Authorization', `Bearer ${adminToken}`);
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.length).toBeGreaterThanOrEqual(2);
+      expect(Array.isArray(res.body.users)).toBe(true);
+      expect(res.body.total).toBeGreaterThanOrEqual(2);
       // Should not expose password hash
-      res.body.forEach((u: any) => expect(u.senhaHash).toBeUndefined());
+      res.body.users.forEach((u: any) => expect(u.senhaHash).toBeUndefined());
     });
 
     it('should return 403 for non-admin', async () => {
@@ -528,8 +529,7 @@ describe('Auth and CRUD API Routes', () => {
         const res = await request(app)
           .delete(`/api/periodos/${periodoId}`)
           .set('Authorization', `Bearer ${adminToken}`);
-        expect(res.status).toBe(200);
-        expect(res.body.success).toBe(true);
+        expect(res.status).toBe(204);
       });
 
       it('should return 404 for nonexistent periodo', async () => {

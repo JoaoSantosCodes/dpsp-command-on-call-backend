@@ -19,6 +19,7 @@ export interface RegisterData {
   nome: string;
   perfil: UserPerfil;
   cargo?: string | null;
+  contato?: string | null;
   username: string;
   senha: string;
 }
@@ -72,6 +73,7 @@ export class AuthService {
       nome: row.nome,
       perfil: row.perfil,
       cargo: row.cargo,
+      contato: row.contato || null,
       username: row.username,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -102,8 +104,8 @@ export class AuthService {
     const senhaHash = await bcrypt.hash(data.senha, SALT_ROUNDS);
 
     const stmt = this.db.prepare(`
-      INSERT INTO users (codigo, area_codigo, nome, perfil, cargo, username, senha_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -112,6 +114,7 @@ export class AuthService {
       data.nome,
       data.perfil,
       data.cargo || null,
+      data.contato || null,
       data.username,
       senhaHash
     );
@@ -127,6 +130,7 @@ export class AuthService {
       nome: row.nome,
       perfil: row.perfil,
       cargo: row.cargo,
+      contato: row.contato || null,
       username: row.username,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

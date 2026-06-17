@@ -29,6 +29,7 @@ function createTestDb(): Database.Database {
       nome TEXT NOT NULL,
       perfil TEXT NOT NULL CHECK(perfil IN ('Adm', 'Responsavel', 'Plantonista')),
       cargo TEXT,
+      contato TEXT,
       username TEXT NOT NULL UNIQUE,
       senha_hash TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now')),

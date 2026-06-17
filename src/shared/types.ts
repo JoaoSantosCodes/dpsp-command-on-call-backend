@@ -184,6 +184,7 @@ export interface User {
   nome: string;
   perfil: UserPerfil;
   cargo: string | null;
+  contato?: string | null;
   username: string;
   senhaHash: string;
   createdAt: string;

@@ -30,6 +30,7 @@ function createTestDb(): Database.Database {
       nome TEXT NOT NULL,
       perfil TEXT NOT NULL CHECK(perfil IN ('Adm', 'Responsavel', 'Plantonista')),
       cargo TEXT,
+      contato TEXT,
       username TEXT NOT NULL UNIQUE,
       senha_hash TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now')),
@@ -480,7 +481,7 @@ describe('Role-based access control integration', () => {
         .get('/api/users')
         .set('Authorization', `Bearer ${adminToken}`);
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      expect(Array.isArray(res.body.users)).toBe(true);
     });
 
     it('should deny Plantonista from listing users', async () => {

@@ -92,6 +92,7 @@ function createTables(db: Database.Database): void {
       nome TEXT NOT NULL,
       perfil TEXT NOT NULL CHECK(perfil IN ('Adm', 'Responsavel', 'Plantonista')),
       cargo TEXT,
+      contato TEXT,
       username TEXT NOT NULL UNIQUE,
       senha_hash TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now')),
@@ -328,6 +329,13 @@ export function initializeDatabase(dbPath?: string): Database.Database {
 
   // Create all tables
   createTables(db);
+
+  // Migrate: add contato column to users if it doesn't exist yet (for existing DBs)
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN contato TEXT`);
+  } catch {
+    // Column already exists — ignore
+  }
 
   // Seed teams
   seedTeams(db);

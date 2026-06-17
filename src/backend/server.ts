@@ -13,6 +13,7 @@ import { normalizeForComparison } from './database/init';
 import { getAreasForMonitor, getPrimaryAreaForMonitor } from './services/monitor-area-mapping';
 import { AuthService } from './services/auth';
 import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, createAreaFilterMiddleware, getEffectiveAreaFilter, getEffectiveAreas, writeBlockMiddleware } from './middleware/auth';
+import { resolveAreaFallback } from './services/dashboard-fallback';
 import { TeamRepository } from './database/repositories/TeamRepository';
 import { UserRepository } from './database/repositories/UserRepository';
 import { AreaRepository } from './database/repositories/AreaRepository';
@@ -693,8 +694,8 @@ export function createServer(deps: ServerDependencies): Express {
       res.json(mappings);
     });
 
-    // GET /api/dashboard/monitors-by-area — Monitors grouped by area
-    app.get('/api/dashboard/monitors-by-area', (_req: Request, res: Response) => {
+    // GET /api/dashboard/monitors-by-area — Monitors grouped by area with on-call/fallback status
+    app.get('/api/dashboard/monitors-by-area', (req: Request, res: Response) => {
       const monitors = deps.datadogPollingService.getMonitors();
       const manualMappings = monitorAreaMappingRepo.getAllMapped();
 
@@ -747,8 +748,77 @@ export function createServer(deps: ServerDependencies): Express {
         }
       }
 
-      const groups = Object.values(areaGroups);
-      res.json({ groups, unassigned });
+      // Resolve on-call/fallback status per area group (Requirements 5.1, 5.2)
+      // Determine the current day in Brasília time
+      const now = new Date();
+      const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+      const brasiliaDate = new Date(brasiliaStr);
+      const todayStr = `${brasiliaDate.getFullYear()}-${String(brasiliaDate.getMonth() + 1).padStart(2, '0')}-${String(brasiliaDate.getDate()).padStart(2, '0')}`;
+
+      const groupsWithOnCall = Object.values(areaGroups).map(group => {
+        // Determine if there is a plantonista scheduled today for this area
+        let scheduledPlantonista: { nome: string; usuarioCodigo: string } | null = null;
+
+        if (deps.escalaRepository && deps.periodoRepository && deps.userRepository) {
+          const escalas = deps.escalaRepository.getByArea(group.areaCodigo);
+          const periodos = deps.periodoRepository.getByArea(group.areaCodigo);
+
+          // Find periodos matching today
+          const todayPeriodos = periodos.filter(p => p.data === todayStr);
+          if (todayPeriodos.length > 0) {
+            const periodoCodigos = new Set(todayPeriodos.map(p => p.codigo));
+            const todayEscala = escalas.find(e => periodoCodigos.has(e.periodoCodigo));
+            if (todayEscala) {
+              const allUsers = deps.userRepository.getAll();
+              const user = allUsers.find(u => u.codigo === todayEscala.usuarioCodigo);
+              scheduledPlantonista = {
+                nome: user ? user.nome : todayEscala.usuarioCodigo,
+                usuarioCodigo: todayEscala.usuarioCodigo,
+              };
+            }
+          }
+        }
+
+        if (scheduledPlantonista) {
+          // There is a scheduled plantonista — no fallback needed
+          return {
+            ...group,
+            onCallStatus: {
+              hasScheduledPlantonista: true,
+              plantonista: scheduledPlantonista,
+              fallback: null,
+            },
+          };
+        }
+
+        // No plantonista scheduled today — resolve fallback (Requirements 5.1, 5.2)
+        if (deps.userRepository && deps.areaRepository) {
+          const fallback = resolveAreaFallback(group.areaCodigo, deps.userRepository, deps.areaRepository);
+          return {
+            ...group,
+            onCallStatus: {
+              hasScheduledPlantonista: false,
+              plantonista: null,
+              fallback: {
+                scope: fallback.fallbackScope,
+                torre: fallback.torre,
+                contacts: fallback.contacts,
+              },
+            },
+          };
+        }
+
+        return {
+          ...group,
+          onCallStatus: {
+            hasScheduledPlantonista: false,
+            plantonista: null,
+            fallback: null,
+          },
+        };
+      });
+
+      res.json({ groups: groupsWithOnCall, unassigned });
     });
   }
 
@@ -867,6 +937,8 @@ export function createServer(deps: ServerDependencies): Express {
       const userRepository = deps.userRepository;
 
       // GET /api/users — Listar usuários (admin and responsavel)
+      // Suporta ?search= para filtrar por nome ou perfil (case-insensitive)
+      // Retorna { users, total } onde total é o número de usuários após filtro
       app.get('/api/users', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), dbAreaFilterMiddleware, (req: Request, res: Response) => {
         let users = userRepository.getAll();
         // Use effective areas for filtering
@@ -874,18 +946,27 @@ export function createServer(deps: ServerDependencies): Express {
         if (effectiveAreas !== null) {
           users = users.filter(u => u.areaCodigo && effectiveAreas.includes(u.areaCodigo));
         }
+        // Apply search filter by nome or perfil (case-insensitive)
+        const search = req.query.search as string | undefined;
+        if (search && search.trim() !== '') {
+          const searchLower = search.trim().toLowerCase();
+          users = users.filter(u =>
+            u.nome.toLowerCase().includes(searchLower) ||
+            u.perfil.toLowerCase().includes(searchLower)
+          );
+        }
         const usersWithoutPassword = users.map(({ senhaHash, ...u }) => u);
-        res.json(usersWithoutPassword);
+        res.json({ users: usersWithoutPassword, total: usersWithoutPassword.length });
       });
 
       // POST /api/users — Criar usuário (admin only)
       app.post('/api/users', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
-        const { codigo, areaCodigo, nome, perfil, cargo, username, senha } = req.body || {};
+        const { codigo, areaCodigo, nome, perfil, cargo, contato, username, senha } = req.body || {};
         if (!codigo || !nome || !perfil || !username || !senha) {
           res.status(400).json({ error: 'codigo, nome, perfil, username e senha são obrigatórios' });
           return;
         }
-        const result = await authService.register({ codigo, areaCodigo, nome, perfil, cargo, username, senha });
+        const result = await authService.register({ codigo, areaCodigo, nome, perfil, cargo, contato, username, senha });
         if (!result.success) {
           res.status(400).json({ error: result.error });
           return;
@@ -905,8 +986,8 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(404).json({ error: 'Usuário não encontrado' });
           return;
         }
-        const { codigo, areaCodigo, nome, perfil, cargo, username } = req.body || {};
-        const updated = userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, username });
+        const { codigo, areaCodigo, nome, perfil, cargo, contato, username } = req.body || {};
+        const updated = userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, contato, username });
         if (!updated) {
           res.status(500).json({ error: 'Erro ao atualizar usuário' });
           return;
@@ -1187,7 +1268,13 @@ export function createServer(deps: ServerDependencies): Express {
           }
         }
 
-        res.json({ days });
+        // Calculate coverage stats (Requirements 10.2, 10.4)
+        const totalDays = daysInMonth;
+        const filledDays = days.filter(d => d.hasAssignment).length;
+        const missingDays = totalDays - filledDays;
+        const coveragePercentage = totalDays > 0 ? Math.round((filledDays / totalDays) * 100 * 100) / 100 : 0;
+
+        res.json({ days, filledDays, missingDays, totalDays, coveragePercentage });
       });
 
       // GET /api/periodos — Listar períodos (opcionalmente por área, filtrado por perfil)
@@ -1255,8 +1342,8 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(404).json({ error: 'Período não encontrado' });
           return;
         }
-        periodoRepository.delete(id);
-        res.json({ success: true });
+        periodoRepository.deleteById(id);
+        res.status(204).send();
       });
     }
 

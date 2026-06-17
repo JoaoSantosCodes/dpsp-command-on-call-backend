@@ -10,8 +10,8 @@ export class UserRepository {
 
   create(user: Omit<User, 'id' | 'createdAt' | 'updatedAt'>): User {
     const stmt = this.db.prepare(`
-      INSERT INTO users (codigo, area_codigo, nome, perfil, cargo, username, senha_hash, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      INSERT INTO users (codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `);
     const result = stmt.run(
       user.codigo,
@@ -19,6 +19,7 @@ export class UserRepository {
       user.nome,
       user.perfil,
       user.cargo || null,
+      user.contato || null,
       user.username,
       user.senhaHash
     );
@@ -27,7 +28,7 @@ export class UserRepository {
 
   getById(id: number): User | undefined {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, area_codigo, nome, perfil, cargo, username, senha_hash, created_at, updated_at
+      SELECT id, codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash, created_at, updated_at
       FROM users WHERE id = ?
     `);
     const row = stmt.get(id) as any;
@@ -37,7 +38,7 @@ export class UserRepository {
 
   getByUsername(username: string): User | undefined {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, area_codigo, nome, perfil, cargo, username, senha_hash, created_at, updated_at
+      SELECT id, codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash, created_at, updated_at
       FROM users WHERE username = ?
     `);
     const row = stmt.get(username) as any;
@@ -47,7 +48,7 @@ export class UserRepository {
 
   getByArea(areaCodigo: string): User[] {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, area_codigo, nome, perfil, cargo, username, senha_hash, created_at, updated_at
+      SELECT id, codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash, created_at, updated_at
       FROM users WHERE area_codigo = ?
       ORDER BY nome ASC
     `);
@@ -57,7 +58,7 @@ export class UserRepository {
 
   getAll(): User[] {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, area_codigo, nome, perfil, cargo, username, senha_hash, created_at, updated_at
+      SELECT id, codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash, created_at, updated_at
       FROM users ORDER BY nome ASC
     `);
     const rows = stmt.all() as any[];
@@ -73,6 +74,7 @@ export class UserRepository {
     if (data.nome !== undefined) { fields.push('nome = ?'); values.push(data.nome); }
     if (data.perfil !== undefined) { fields.push('perfil = ?'); values.push(data.perfil); }
     if (data.cargo !== undefined) { fields.push('cargo = ?'); values.push(data.cargo || null); }
+    if (data.contato !== undefined) { fields.push('contato = ?'); values.push(data.contato || null); }
     if (data.username !== undefined) { fields.push('username = ?'); values.push(data.username); }
     if (data.senhaHash !== undefined) { fields.push('senha_hash = ?'); values.push(data.senhaHash); }
 
@@ -100,6 +102,7 @@ export class UserRepository {
       nome: row.nome,
       perfil: row.perfil,
       cargo: row.cargo || null,
+      contato: row.contato || null,
       username: row.username,
       senhaHash: row.senha_hash,
       createdAt: row.created_at,
