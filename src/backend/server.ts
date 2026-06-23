@@ -243,7 +243,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // PUT /api/teams/:id — Atualizar time
   app.put('/api/teams/:id', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const team = deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
@@ -256,7 +256,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // DELETE /api/teams/:id — Deletar time
   app.delete('/api/teams/:id', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const team = deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
@@ -268,7 +268,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // GET /api/teams/:id/escalation-chain — Cadeia de escalação
   app.get('/api/teams/:id/escalation-chain', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const team = deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
@@ -280,7 +280,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // PUT /api/teams/:id/escalation-chain — Atualizar cadeia de escalação
   app.put('/api/teams/:id/escalation-chain', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const team = deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
@@ -599,7 +599,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // POST /api/incidents/:id/acknowledge — Confirmar atendimento
   app.post('/api/incidents/:id/acknowledge', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { personId } = req.body || {};
 
     if (!personId) {
