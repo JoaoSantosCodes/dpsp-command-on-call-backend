@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { IncidentRecord, EscalationEvent, HistoryFilters } from '../../shared/types';
+import { IncidentRecord, EscalationEvent, HistoryFilters } from '../../../shared/types';
 
 export class IncidentRepository {
   private db: Database.Database;

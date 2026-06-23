@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { User } from '../../shared/types';
+import { User } from '../../../shared/types';
 
 export class UserRepository {
   private db: Database.Database;

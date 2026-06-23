@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { Periodo } from '../../shared/types';
+import { Periodo } from '../../../shared/types';
 
 export class PeriodoRepository {
   private db: Database.Database;

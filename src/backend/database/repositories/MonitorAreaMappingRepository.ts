@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { MonitorAreaMapping } from '../../shared/types';
+import { MonitorAreaMapping } from '../../../shared/types';
 
 export class MonitorAreaMappingRepository {
   private db: Database.Database;

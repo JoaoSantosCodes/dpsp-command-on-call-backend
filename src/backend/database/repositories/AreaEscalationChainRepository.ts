@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { EscalationChainMember } from '../../shared/types';
+import { EscalationChainMember } from '../../../shared/types';
 
 export class AreaEscalationChainRepository {
   private db: Database.Database;

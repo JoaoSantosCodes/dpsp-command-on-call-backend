@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { Escala } from '../../shared/types';
+import { Escala } from '../../../shared/types';
 
 export class EscalaRepository {
   private db: Database.Database;

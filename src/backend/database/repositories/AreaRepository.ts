@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { Area } from '../../shared/types';
+import { Area } from '../../../shared/types';
 
 export class AreaRepository {
   private db: Database.Database;

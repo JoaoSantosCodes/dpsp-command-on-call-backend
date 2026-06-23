@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { ScheduleEntry } from '../../shared/types';
+import { ScheduleEntry } from '../../../shared/types';
 
 export class ScheduleRepository {
   private db: Database.Database;
