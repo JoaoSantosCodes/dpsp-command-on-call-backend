@@ -113,7 +113,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // GET /api/monitors/:id — Detalhes de um monitor específico (template/message)
   app.get('/api/monitors/:id', async (req: Request, res: Response) => {
-    const monitorId = parseInt(req.params.id, 10);
+    const monitorId = parseInt(req.params.id as string, 10);
     if (isNaN(monitorId)) {
       res.status(400).json({ error: 'ID inválido' });
       return;
@@ -144,7 +144,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // GET /api/monitors/:id/responsible — Retorna plantonistas responsáveis pelo monitor (todos escalões)
   app.get('/api/monitors/:id/responsible', (req: Request, res: Response) => {
-    const monitorId = parseInt(req.params.id, 10);
+    const monitorId = parseInt(req.params.id as string, 10);
     if (isNaN(monitorId)) {
       res.status(400).json({ error: 'ID inválido' });
       return;
@@ -630,7 +630,7 @@ export function createServer(deps: ServerDependencies): Express {
 
   // PUT /api/monitor-mappings/:monitorId — Associar monitor a time
   app.put('/api/monitor-mappings/:monitorId', (req: Request, res: Response) => {
-    const monitorId = parseInt(req.params.monitorId, 10);
+    const monitorId = parseInt(req.params.monitorId as string, 10);
     if (isNaN(monitorId)) {
       res.status(400).json({ error: 'monitorId deve ser um número válido' });
       return;
@@ -663,7 +663,7 @@ export function createServer(deps: ServerDependencies): Express {
 
     // PUT /api/monitor-area-mappings/:monitorId — Assign monitor to area
     app.put('/api/monitor-area-mappings/:monitorId', writeBlockMiddleware, (req: Request, res: Response) => {
-      const monitorId = parseInt(req.params.monitorId, 10);
+      const monitorId = parseInt(req.params.monitorId as string, 10);
       if (isNaN(monitorId)) {
         res.status(400).json({ error: 'monitorId deve ser um número válido' });
         return;
@@ -976,7 +976,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // PUT /api/users/:id — Editar usuário
       app.put('/api/users/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -998,7 +998,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // DELETE /api/users/:id — Deletar usuário (admin only)
       app.delete('/api/users/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -1019,7 +1019,7 @@ export function createServer(deps: ServerDependencies): Express {
 
         // GET /api/users/:id/areas — List linked areas for a user
         app.get('/api/users/:id/areas', authMiddleware, (req: Request, res: Response) => {
-          const id = parseInt(req.params.id, 10);
+          const id = parseInt(req.params.id as string, 10);
           if (isNaN(id)) {
             res.status(400).json({ error: 'ID inválido' });
             return;
@@ -1035,7 +1035,7 @@ export function createServer(deps: ServerDependencies): Express {
 
         // POST /api/users/:id/areas — Add area binding (Admin only)
         app.post('/api/users/:id/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
-          const id = parseInt(req.params.id, 10);
+          const id = parseInt(req.params.id as string, 10);
           if (isNaN(id)) {
             res.status(400).json({ error: 'ID inválido' });
             return;
@@ -1056,7 +1056,7 @@ export function createServer(deps: ServerDependencies): Express {
 
         // DELETE /api/users/:id/areas/:areaCodigo — Remove area binding (Admin only)
         app.delete('/api/users/:id/areas/:areaCodigo', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
-          const id = parseInt(req.params.id, 10);
+          const id = parseInt(req.params.id as string, 10);
           if (isNaN(id)) {
             res.status(400).json({ error: 'ID inválido' });
             return;
@@ -1066,7 +1066,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
           }
-          const { areaCodigo } = req.params;
+          const areaCodigo = req.params.areaCodigo as string;
           userAreaRepo.removeAreaBinding(id, areaCodigo);
           res.json({ success: true });
         });
@@ -1101,7 +1101,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // PUT /api/areas/:id — Editar área
       app.put('/api/areas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -1118,7 +1118,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // DELETE /api/areas/:id — Deletar área (admin only)
       app.delete('/api/areas/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -1139,7 +1139,7 @@ export function createServer(deps: ServerDependencies): Express {
 
         // GET /api/areas/:codigo/escalation-chain — Get escalation chain for an area
         app.get('/api/areas/:codigo/escalation-chain', authMiddleware, (req: Request, res: Response) => {
-          const { codigo } = req.params;
+          const codigo = req.params.codigo as string;
           const area = areaRepository.getByCodigo(codigo);
           if (!area) {
             res.status(404).json({ error: 'Área não encontrada' });
@@ -1151,7 +1151,7 @@ export function createServer(deps: ServerDependencies): Express {
 
         // PUT /api/areas/:codigo/escalation-chain — Save escalation chain for an area
         app.put('/api/areas/:codigo/escalation-chain', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-          const { codigo } = req.params;
+          const codigo = req.params.codigo as string;
           const area = areaRepository.getByCodigo(codigo);
           if (!area) {
             res.status(404).json({ error: 'Área não encontrada' });
@@ -1169,7 +1169,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // GET /api/areas/:codigo/users — Get all users in an area
       app.get('/api/areas/:codigo/users', authMiddleware, (req: Request, res: Response) => {
-        const { codigo } = req.params;
+        const codigo = req.params.codigo as string;
         const area = areaRepository.getByCodigo(codigo);
         if (!area) {
           res.status(404).json({ error: 'Área não encontrada' });
@@ -1315,7 +1315,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // PUT /api/periodos/:id — Editar período
       app.put('/api/periodos/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -1332,7 +1332,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // DELETE /api/periodos/:id — Deletar período
       app.delete('/api/periodos/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -1388,7 +1388,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // PUT /api/escalas/:id — Editar escala
       app.put('/api/escalas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
@@ -1405,7 +1405,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // DELETE /api/escalas/:id — Deletar escala
       app.delete('/api/escalas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
-        const id = parseInt(req.params.id, 10);
+        const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
