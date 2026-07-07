@@ -218,6 +218,23 @@ function createTables(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_problema_areas_problema ON problema_areas(problema_id);
     CREATE INDEX IF NOT EXISTS idx_problema_areas_area ON problema_areas(area_codigo);
 
+    -- Tb_Contato_Log: Registro de status de contato com plantonista
+    CREATE TABLE IF NOT EXISTS contato_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plantonista TEXT NOT NULL,
+      area_codigo TEXT NOT NULL,
+      problema_codigo TEXT,
+      data TEXT NOT NULL,
+      hora TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pendente', 'atendido', 'nao_atendido')),
+      registrado_por TEXT,
+      observacao TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_contato_log_data ON contato_log(data);
+    CREATE INDEX IF NOT EXISTS idx_contato_log_area ON contato_log(area_codigo, data);
+
     -- Performance indexes
     CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
     CREATE INDEX IF NOT EXISTS idx_incidents_started_at ON incidents(started_at);

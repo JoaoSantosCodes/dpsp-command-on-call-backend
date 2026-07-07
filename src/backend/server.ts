@@ -469,11 +469,16 @@ export function createServer(deps: ServerDependencies): Express {
               userRepo.create({
                 codigo,
                 areaCodigo,
+                areaSolicitada: null,
                 nome: colab.nome,
                 perfil: 'Plantonista',
+                nivelEscalonamento: null,
                 cargo: colab.cargo || null,
+                contato: null,
                 username,
                 senhaHash,
+                ativo: true,
+                aprovado: true,
               });
               usersCreated++;
             } catch { /* skip duplicates */ }
@@ -1588,6 +1593,50 @@ export function createServer(deps: ServerDependencies): Express {
       res.json(permRepo.getByUser(id));
     });
   }
+
+  // === Contato Log Routes (status de acionamento) ===
+
+  // POST /api/contato-log — Registrar status de contato com plantonista
+  app.post('/api/contato-log', (req: Request, res: Response) => {
+    const { plantonista, areaCodigo, problemaCodigo, data, status, observacao } = req.body || {};
+    if (!plantonista || !areaCodigo || !data || !status) {
+      res.status(400).json({ error: 'plantonista, areaCodigo, data e status são obrigatórios' });
+      return;
+    }
+    if (!['pendente', 'atendido', 'nao_atendido'].includes(status)) {
+      res.status(400).json({ error: 'status deve ser: pendente, atendido ou nao_atendido' });
+      return;
+    }
+    // Hora atual em Brasília
+    const now = new Date();
+    const hora = now.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    if (deps.db) {
+      try {
+        deps.db.prepare(`
+          INSERT INTO contato_log (plantonista, area_codigo, problema_codigo, data, hora, status, registrado_por, observacao)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(plantonista, areaCodigo, problemaCodigo || null, data, hora, status, req.user?.username || 'sistema', observacao || null);
+      } catch { /* table might not exist yet */ }
+    }
+    res.json({ success: true, hora });
+  });
+
+  // GET /api/contato-log — Listar logs de contato (para relatório)
+  app.get('/api/contato-log', (req: Request, res: Response) => {
+    if (!deps.db) { res.json([]); return; }
+    const dataFilter = req.query.data as string | undefined;
+    const areaFilter = req.query.areaCodigo as string | undefined;
+    try {
+      let sql = 'SELECT * FROM contato_log WHERE 1=1';
+      const params: any[] = [];
+      if (dataFilter) { sql += ' AND data = ?'; params.push(dataFilter); }
+      if (areaFilter) { sql += ' AND area_codigo = ?'; params.push(areaFilter); }
+      sql += ' ORDER BY data DESC, hora DESC LIMIT 500';
+      const rows = deps.db.prepare(sql).all(...params);
+      res.json(rows);
+    } catch { res.json([]); }
+  });
 
   return app;
 }
