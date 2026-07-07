@@ -10,16 +10,16 @@ export class AreaRepository {
 
   create(area: Omit<Area, 'id' | 'createdAt' | 'updatedAt'>): Area {
     const stmt = this.db.prepare(`
-      INSERT INTO areas (codigo, nome, torre, created_at, updated_at)
-      VALUES (?, ?, ?, datetime('now'), datetime('now'))
+      INSERT INTO areas (codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `);
-    const result = stmt.run(area.codigo, area.nome, area.torre || null);
+    const result = stmt.run(area.codigo, area.nome, area.torre || null, area.coordenadorNome || null, area.coordenadorContato || null, area.gerenteNome || null, area.gerenteContato || null);
     return this.getById(Number(result.lastInsertRowid))!;
   }
 
   getById(id: number): Area | undefined {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, nome, torre, created_at, updated_at
+      SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas WHERE id = ?
     `);
     const row = stmt.get(id) as any;
@@ -29,7 +29,7 @@ export class AreaRepository {
 
   getByCodigo(codigo: string): Area | undefined {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, nome, torre, created_at, updated_at
+      SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas WHERE codigo = ?
     `);
     const row = stmt.get(codigo) as any;
@@ -39,7 +39,7 @@ export class AreaRepository {
 
   getAll(): Area[] {
     const stmt = this.db.prepare(`
-      SELECT id, codigo, nome, torre, created_at, updated_at
+      SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas ORDER BY nome ASC
     `);
     const rows = stmt.all() as any[];
@@ -53,6 +53,10 @@ export class AreaRepository {
     if (data.codigo !== undefined) { fields.push('codigo = ?'); values.push(data.codigo); }
     if (data.nome !== undefined) { fields.push('nome = ?'); values.push(data.nome); }
     if (data.torre !== undefined) { fields.push('torre = ?'); values.push(data.torre || null); }
+    if (data.coordenadorNome !== undefined) { fields.push('coordenador_nome = ?'); values.push(data.coordenadorNome || null); }
+    if (data.coordenadorContato !== undefined) { fields.push('coordenador_contato = ?'); values.push(data.coordenadorContato || null); }
+    if (data.gerenteNome !== undefined) { fields.push('gerente_nome = ?'); values.push(data.gerenteNome || null); }
+    if (data.gerenteContato !== undefined) { fields.push('gerente_contato = ?'); values.push(data.gerenteContato || null); }
 
     if (fields.length === 0) return this.getById(id);
 
@@ -76,6 +80,10 @@ export class AreaRepository {
       codigo: row.codigo,
       nome: row.nome,
       torre: row.torre || null,
+      coordenadorNome: row.coordenador_nome || null,
+      coordenadorContato: row.coordenador_contato || null,
+      gerenteNome: row.gerente_nome || null,
+      gerenteContato: row.gerente_contato || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

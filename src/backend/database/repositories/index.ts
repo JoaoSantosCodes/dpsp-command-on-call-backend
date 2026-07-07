@@ -10,3 +10,5 @@ export { AreaRepository } from './AreaRepository';
 export { PeriodoRepository } from './PeriodoRepository';
 export { EscalaRepository } from './EscalaRepository';
 export { UserAreaRepository } from './UserAreaRepository';
+export { ProblemaRepository } from './ProblemaRepository';
+export { UserPermissionRepository } from './UserPermissionRepository';

@@ -90,15 +90,30 @@ function createTables(db: Database.Database): void {
       codigo TEXT NOT NULL UNIQUE,
       area_codigo TEXT,
       nome TEXT NOT NULL,
-      perfil TEXT NOT NULL CHECK(perfil IN ('Adm', 'Responsavel', 'Plantonista')),
+      perfil TEXT NOT NULL CHECK(perfil IN ('Adm', 'Responsavel', 'Plantonista', 'Consultor')),
+      nivel_escalonamento TEXT,
       cargo TEXT,
       contato TEXT,
       username TEXT NOT NULL UNIQUE,
       senha_hash TEXT NOT NULL,
+      ativo INTEGER NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (area_codigo) REFERENCES areas(codigo)
     );
+
+    -- Tb_User_Permissions: Permissões granulares por menu/tela
+    CREATE TABLE IF NOT EXISTS user_permissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      menu TEXT NOT NULL,
+      can_read INTEGER NOT NULL DEFAULT 1,
+      can_edit INTEGER NOT NULL DEFAULT 0,
+      can_delete INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(user_id, menu)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
 
     -- Tb_Periodos: Períodos de plantão por área
     CREATE TABLE IF NOT EXISTS periodos (
@@ -179,6 +194,37 @@ function createTables(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_monitor_area ON monitor_area_mapping(area_codigo);
+
+    -- Tb_Problemas: Cadastro de problemas
+    CREATE TABLE IF NOT EXISTS problemas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      codigo TEXT NOT NULL UNIQUE,
+      descricao TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Tb_Problema_Areas: Áreas responsáveis por problema (com ordem de acionamento)
+    CREATE TABLE IF NOT EXISTS problema_areas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      problema_id INTEGER NOT NULL REFERENCES problemas(id) ON DELETE CASCADE,
+      area_codigo TEXT NOT NULL REFERENCES areas(codigo),
+      ordem INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(problema_id, area_codigo),
+      UNIQUE(problema_id, ordem)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_problema_areas_problema ON problema_areas(problema_id);
+    CREATE INDEX IF NOT EXISTS idx_problema_areas_area ON problema_areas(area_codigo);
+
+    -- Performance indexes
+    CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
+    CREATE INDEX IF NOT EXISTS idx_incidents_started_at ON incidents(started_at);
+    CREATE INDEX IF NOT EXISTS idx_users_area ON users(area_codigo);
+    CREATE INDEX IF NOT EXISTS idx_escalas_area ON escalas(area_codigo);
+    CREATE INDEX IF NOT EXISTS idx_escalas_periodo ON escalas(periodo_codigo);
+    CREATE INDEX IF NOT EXISTS idx_periodos_area_data ON periodos(area_codigo, data);
   `);
 }
 
@@ -211,6 +257,8 @@ const AREAS_SEED = [
   { codigo: 'SOLUCOES_CORPORATIVAS', nome: 'Soluções Corporativas', torre: null },
   { codigo: 'PDV', nome: 'PDV', torre: null },
   { codigo: 'BALCAO', nome: 'Balcão', torre: null },
+  { codigo: 'TORRE_SOLUCOES_DIGITAIS', nome: 'Torre Soluções Digitais', torre: null },
+  { codigo: 'PENDENTE_APROVACAO', nome: 'Pendente de Aprovação', torre: null },
 ];
 
 function seedAreas(db: Database.Database): void {
@@ -336,6 +384,56 @@ export function initializeDatabase(dbPath?: string): Database.Database {
   } catch {
     // Column already exists — ignore
   }
+
+  // Migrate: add nivel_escalonamento column to users
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN nivel_escalonamento TEXT`);
+  } catch { /* already exists */ }
+
+  // Migrate: add ativo column to users
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN ativo INTEGER NOT NULL DEFAULT 1`);
+  } catch { /* already exists */ }
+
+  // Migrate: add aprovado column to users (pending approval flow)
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN aprovado INTEGER NOT NULL DEFAULT 1`);
+  } catch { /* already exists */ }
+
+  // Migrate: add area_solicitada column (area requested during registration)
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN area_solicitada TEXT`);
+  } catch { /* already exists */ }
+
+  // Migrate: create user_permissions table if not exists
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_permissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        menu TEXT NOT NULL,
+        can_read INTEGER NOT NULL DEFAULT 1,
+        can_edit INTEGER NOT NULL DEFAULT 0,
+        can_delete INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(user_id, menu)
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
+    `);
+  } catch { /* already exists */ }
+
+  // Migrate: add coordenador/gerente columns to areas
+  try {
+    db.exec(`ALTER TABLE areas ADD COLUMN coordenador_nome TEXT`);
+  } catch { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE areas ADD COLUMN coordenador_contato TEXT`);
+  } catch { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE areas ADD COLUMN gerente_nome TEXT`);
+  } catch { /* already exists */ }
+  try {
+    db.exec(`ALTER TABLE areas ADD COLUMN gerente_contato TEXT`);
+  } catch { /* already exists */ }
 
   // Seed teams
   seedTeams(db);

@@ -16,12 +16,15 @@ export interface TokenPayload {
 export interface RegisterData {
   codigo: string;
   areaCodigo?: string | null;
+  areaSolicitada?: string | null;
   nome: string;
   perfil: UserPerfil;
+  nivelEscalonamento?: string | null;
   cargo?: string | null;
   contato?: string | null;
   username: string;
   senha: string;
+  aprovado?: boolean;
 }
 
 export interface AuthResult {
@@ -104,19 +107,22 @@ export class AuthService {
     const senhaHash = await bcrypt.hash(data.senha, SALT_ROUNDS);
 
     const stmt = this.db.prepare(`
-      INSERT INTO users (codigo, area_codigo, nome, perfil, cargo, contato, username, senha_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (codigo, area_codigo, area_solicitada, nome, perfil, nivel_escalonamento, cargo, contato, username, senha_hash, ativo, aprovado)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
     `);
 
     const result = stmt.run(
       data.codigo,
       data.areaCodigo || null,
+      data.areaSolicitada || null,
       data.nome,
       data.perfil,
+      data.nivelEscalonamento || null,
       data.cargo || null,
       data.contato || null,
       data.username,
-      senhaHash
+      senhaHash,
+      data.aprovado !== undefined ? (data.aprovado ? 1 : 0) : 1
     );
 
     const row = this.db.prepare(

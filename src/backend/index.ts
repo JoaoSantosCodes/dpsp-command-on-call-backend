@@ -18,6 +18,8 @@ import {
   PeriodoRepository,
   EscalaRepository,
   UserAreaRepository,
+  ProblemaRepository,
+  UserPermissionRepository,
 } from './database/repositories';
 import { DatadogPollingService, DatadogClient } from './services/datadog-polling';
 import { EscalationEngine } from './services/escalation-engine';
@@ -112,6 +114,8 @@ async function main(): Promise<void> {
   const periodoRepository = new PeriodoRepository(db);
   const escalaRepository = new EscalaRepository(db);
   const userAreaRepository = new UserAreaRepository(db);
+  const problemaRepository = new ProblemaRepository(db);
+  const userPermissionRepository = new UserPermissionRepository(db);
 
   // 3. Create service instances
   const scheduleManager = new ScheduleManager(scheduleRepository, escalationChainRepository);
@@ -188,6 +192,8 @@ async function main(): Promise<void> {
     areaEscalationChainRepository,
     monitorAreaMappingRepository,
     userAreaRepository,
+    problemaRepository,
+    userPermissionRepository,
     db,
   });
 

@@ -7,3 +7,5 @@ data/
 *.db-wal
 *.csv
 .kiro/
+
+dpsp-command-on-call-frontend/

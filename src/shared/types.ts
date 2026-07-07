@@ -164,7 +164,7 @@ export interface ResolutionRecord {
 // === User/Area/Periodo/Escala Types (Modelo Físico) ===
 
 /** Perfil de usuário do sistema */
-export type UserPerfil = 'Adm' | 'Responsavel' | 'Plantonista';
+export type UserPerfil = 'Adm' | 'Responsavel' | 'Plantonista' | 'Consultor';
 
 /** Tb_Areas - Áreas de responsabilidade */
 export interface Area {
@@ -172,6 +172,10 @@ export interface Area {
   codigo: string;
   nome: string;
   torre: string | null;
+  coordenadorNome: string | null;
+  coordenadorContato: string | null;
+  gerenteNome: string | null;
+  gerenteContato: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -181,14 +185,28 @@ export interface User {
   id: number;
   codigo: string;
   areaCodigo: string | null;
+  areaSolicitada: string | null;
   nome: string;
   perfil: UserPerfil;
+  nivelEscalonamento: string | null;
   cargo: string | null;
   contato?: string | null;
   username: string;
   senhaHash: string;
+  ativo: boolean;
+  aprovado: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Permissão granular por menu */
+export interface UserPermission {
+  id: number;
+  userId: number;
+  menu: string;
+  canRead: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
 }
 
 /** Tb_Periodos - Períodos de plantão por área */

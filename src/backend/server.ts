@@ -1,5 +1,6 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import { DatadogPollingService } from './services/datadog-polling';
@@ -8,8 +9,8 @@ import { ScheduleManager } from './services/schedule-manager';
 import { MonitorMappingService } from './services/monitor-mapping';
 import { IncidentHistoryService } from './services/incident-history';
 import { CSVProcessor } from './services/csv-processor';
+import { normalizeForComparison, hasGarbledCharacters } from '../shared/normalize';
 import { parseEscalationCSV, getCurrentOnCallForArea, EscalationEntry } from './services/escalation-csv-processor';
-import { normalizeForComparison } from './database/init';
 import { getAreasForMonitor, getPrimaryAreaForMonitor } from './services/monitor-area-mapping';
 import { AuthService } from './services/auth';
 import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, createAreaFilterMiddleware, getEffectiveAreaFilter, getEffectiveAreas, writeBlockMiddleware } from './middleware/auth';
@@ -20,6 +21,8 @@ import { AreaRepository } from './database/repositories/AreaRepository';
 import { PeriodoRepository } from './database/repositories/PeriodoRepository';
 import { EscalaRepository } from './database/repositories/EscalaRepository';
 import { UserAreaRepository } from './database/repositories/UserAreaRepository';
+import { ProblemaRepository } from './database/repositories/ProblemaRepository';
+import { UserPermissionRepository } from './database/repositories/UserPermissionRepository';
 import { AreaEscalationChainRepository } from './database/repositories/AreaEscalationChainRepository';
 import { MonitorAreaMappingRepository } from './database/repositories/MonitorAreaMappingRepository';
 import { EscalationChainMember, HistoryFilters } from '../shared/types';
@@ -40,6 +43,8 @@ export interface ServerDependencies {
   userAreaRepository?: UserAreaRepository;
   areaEscalationChainRepository?: AreaEscalationChainRepository;
   monitorAreaMappingRepository?: MonitorAreaMappingRepository;
+  problemaRepository?: ProblemaRepository;
+  userPermissionRepository?: UserPermissionRepository;
   db?: any; // SQLite database for escalation persistence
 }
 
@@ -70,6 +75,12 @@ export function createServer(deps: ServerDependencies): Express {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Selected-Area'],
+  }));
+
+  // Security headers (XSS, clickjacking, sniffing protection)
+  app.use(helmet({
+    contentSecurityPolicy: false, // Desabilitado para não bloquear o frontend SPA
+    crossOriginEmbedderPolicy: false,
   }));
 
   app.use(express.json());
@@ -365,7 +376,6 @@ export function createServer(deps: ServerDependencies): Express {
       decoded = decoded.slice(1);
     }
     // Check for garbled characters indicating wrong encoding
-    const { hasGarbledCharacters } = require('./database/init');
     if (hasGarbledCharacters(decoded)) {
       // Fallback to latin1 decoding
       csvContent = buffer.toString('latin1');
@@ -437,7 +447,7 @@ export function createServer(deps: ServerDependencies): Express {
         } else {
           areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
           try {
-            areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null });
+            areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
             areasCreated++;
           } catch { /* skip */ }
         }
@@ -486,7 +496,6 @@ export function createServer(deps: ServerDependencies): Express {
   app.get('/api/escalation/on-call', (_req: Request, res: Response) => {
     // Use only areas from the escalation CSV data (avoids duplicates with DB)
     // Deduplicate by normalized name
-    const { normalizeForComparison } = require('./services/escalation-csv-processor');
     const seenNormalized = new Set<string>();
     const entryAreas: string[] = [];
     
@@ -849,12 +858,30 @@ export function createServer(deps: ServerDependencies): Express {
         res.status(400).json({ error: 'codigo, nome, perfil, username e senha são obrigatórios' });
         return;
       }
-      const result = await authService.register({ codigo, areaCodigo, nome, perfil, cargo, username, senha });
+
+      // Segurança: auto-registro não permite perfil Adm
+      if (perfil === 'Adm') {
+        res.status(403).json({ error: 'Perfil Adm não permitido no auto-registro. Contate um administrador.' });
+        return;
+      }
+
+      // Novo usuário vai para área PENDENTE_APROVACAO, guarda a área solicitada
+      const result = await authService.register({
+        codigo,
+        areaCodigo: 'PENDENTE_APROVACAO',
+        areaSolicitada: areaCodigo || null,
+        nome,
+        perfil,
+        cargo,
+        username,
+        senha,
+        aprovado: false,
+      });
       if (!result.success) {
         res.status(400).json({ error: result.error });
         return;
       }
-      res.status(201).json({ user: result.user });
+      res.status(201).json({ user: result.user, message: 'Cadastro realizado! Aguarde aprovação do responsável da área.' });
     });
 
     // === Protected Routes (require auth middleware) ===
@@ -1012,6 +1039,36 @@ export function createServer(deps: ServerDependencies): Express {
         res.json({ success: true });
       });
 
+      // POST /api/users/:id/approve — Aprovar plantonista pendente (Responsável/Adm)
+      app.post('/api/users/:id/approve', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (req: Request, res: Response) => {
+        const id = parseInt(req.params.id as string, 10);
+        if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+        const existing = userRepository.getById(id);
+        if (!existing) { res.status(404).json({ error: 'Usuário não encontrado' }); return; }
+        // Move user from PENDENTE_APROVACAO to their requested area
+        const targetArea = existing.areaSolicitada || existing.areaCodigo;
+        userRepository.update(id, { aprovado: true, areaCodigo: targetArea, areaSolicitada: null });
+        res.json({ success: true, message: 'Plantonista aprovado!' });
+      });
+
+      // POST /api/users/:id/reject — Rejeitar plantonista pendente (Responsável/Adm)
+      app.post('/api/users/:id/reject', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (req: Request, res: Response) => {
+        const id = parseInt(req.params.id as string, 10);
+        if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+        const existing = userRepository.getById(id);
+        if (!existing) { res.status(404).json({ error: 'Usuário não encontrado' }); return; }
+        userRepository.update(id, { ativo: false, aprovado: false });
+        res.json({ success: true, message: 'Plantonista rejeitado.' });
+      });
+
+      // GET /api/users/pending — Listar plantonistas pendentes de aprovação
+      app.get('/api/users/pending', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (_req: Request, res: Response) => {
+        const allUsers = userRepository.getAll();
+        const pending = allUsers.filter(u => !u.aprovado && u.ativo);
+        const result = pending.map(({ senhaHash, ...u }) => u);
+        res.json(result);
+      });
+
       // === User-Area Binding Routes ===
 
       if (deps.userAreaRepository) {
@@ -1090,12 +1147,12 @@ export function createServer(deps: ServerDependencies): Express {
 
       // POST /api/areas — Criar nova área (admin only)
       app.post('/api/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
-        const { codigo, nome, torre } = req.body || {};
+        const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
         if (!codigo || !nome) {
           res.status(400).json({ error: 'codigo e nome são obrigatórios' });
           return;
         }
-        const area = areaRepository.create({ codigo, nome, torre: torre || null });
+        const area = areaRepository.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
         res.status(201).json(area);
       });
 
@@ -1111,8 +1168,8 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
-        const { codigo, nome, torre } = req.body || {};
-        const updated = areaRepository.update(id, { codigo, nome, torre });
+        const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
+        const updated = areaRepository.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
         res.json(updated);
       });
 
@@ -1419,6 +1476,117 @@ export function createServer(deps: ServerDependencies): Express {
         res.json({ success: true });
       });
     }
+  }
+
+  // === Problema CRUD Routes ===
+
+  if (deps.problemaRepository) {
+    const problemaRepo = deps.problemaRepository;
+
+    // GET /api/problemas — Listar problemas com áreas
+    app.get('/api/problemas', (_req: Request, res: Response) => {
+      const problemas = problemaRepo.getAllWithAreas();
+      res.json(problemas);
+    });
+
+    // GET /api/problemas/:id — Detalhes de um problema
+    app.get('/api/problemas/:id', (req: Request, res: Response) => {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+      const problema = problemaRepo.getById(id);
+      if (!problema) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
+      const areas = problemaRepo.getAreas(id);
+      res.json({ ...problema, areas });
+    });
+
+    // POST /api/problemas — Criar problema
+    app.post('/api/problemas', (req: Request, res: Response) => {
+      const { codigo, descricao, areas } = req.body || {};
+      if (!codigo || !descricao) {
+        res.status(400).json({ error: 'codigo e descricao são obrigatórios' });
+        return;
+      }
+      // Check unique codigo
+      if (problemaRepo.getByCodigo(codigo)) {
+        res.status(400).json({ error: 'Código já existe' });
+        return;
+      }
+      const problema = problemaRepo.create({ codigo, descricao });
+      // Add areas if provided
+      if (Array.isArray(areas) && areas.length > 0) {
+        problemaRepo.replaceAreas(problema.id, areas);
+      }
+      const result = { ...problema, areas: problemaRepo.getAreas(problema.id) };
+      res.status(201).json(result);
+    });
+
+    // PUT /api/problemas/:id — Editar problema
+    app.put('/api/problemas/:id', (req: Request, res: Response) => {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+      const existing = problemaRepo.getById(id);
+      if (!existing) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
+      const { codigo, descricao, areas } = req.body || {};
+      const updated = problemaRepo.update(id, { codigo, descricao });
+      if (Array.isArray(areas)) {
+        problemaRepo.replaceAreas(id, areas);
+      }
+      const result = { ...updated, areas: problemaRepo.getAreas(id) };
+      res.json(result);
+    });
+
+    // DELETE /api/problemas/:id — Deletar problema
+    app.delete('/api/problemas/:id', (req: Request, res: Response) => {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+      const existing = problemaRepo.getById(id);
+      if (!existing) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
+      problemaRepo.delete(id);
+      res.json({ success: true });
+    });
+
+    // PUT /api/problemas/:id/areas — Salvar grid de áreas do problema
+    app.put('/api/problemas/:id/areas', (req: Request, res: Response) => {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+      const existing = problemaRepo.getById(id);
+      if (!existing) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
+      const { areas } = req.body || {};
+      if (!Array.isArray(areas)) {
+        res.status(400).json({ error: 'Body deve conter array "areas" com { areaCodigo, ordem }' });
+        return;
+      }
+      problemaRepo.replaceAreas(id, areas);
+      const result = problemaRepo.getAreas(id);
+      res.json(result);
+    });
+  }
+
+  // === User Permissions Routes ===
+
+  if (deps.userPermissionRepository) {
+    const permRepo = deps.userPermissionRepository;
+
+    // GET /api/users/:id/permissions — Get permissions for a user
+    app.get('/api/users/:id/permissions', (req: Request, res: Response) => {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+      const perms = permRepo.getByUser(id);
+      res.json(perms);
+    });
+
+    // PUT /api/users/:id/permissions — Replace all permissions for a user
+    app.put('/api/users/:id/permissions', (req: Request, res: Response) => {
+      const id = parseInt(req.params.id as string, 10);
+      if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
+      const { permissions } = req.body || {};
+      if (!Array.isArray(permissions)) {
+        res.status(400).json({ error: 'Body deve conter array "permissions"' });
+        return;
+      }
+      permRepo.replacePermissions(id, permissions);
+      res.json(permRepo.getByUser(id));
+    });
   }
 
   return app;
