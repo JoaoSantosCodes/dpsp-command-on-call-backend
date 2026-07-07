@@ -1018,8 +1018,8 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(404).json({ error: 'Usuário não encontrado' });
           return;
         }
-        const { codigo, areaCodigo, nome, perfil, cargo, contato, username } = req.body || {};
-        const updated = userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, contato, username });
+        const { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo } = req.body || {};
+        const updated = userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo });
         if (!updated) {
           res.status(500).json({ error: 'Erro ao atualizar usuário' });
           return;
