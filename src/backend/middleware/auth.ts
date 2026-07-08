@@ -37,6 +37,9 @@ export function createAuthMiddleware(authService: AuthService) {
     const selectedArea = req.headers['x-selected-area'] as string | undefined;
     if (selectedArea) {
       req.selectedArea = selectedArea;
+    } else if (payload.perfil === 'Adm') {
+      // Adm without explicit header selection sees all areas
+      req.selectedArea = null;
     } else {
       req.selectedArea = payload.areaCodigo;
     }

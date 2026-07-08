@@ -1,4 +1,28 @@
 /**
+ * Validate that a string contains readable text (not binary/corrupted data).
+ * Returns true if the text appears valid/readable.
+ */
+function isReadableText(text: string): boolean {
+  if (!text || text.length === 0) return true;
+  // Check for control characters (except tab, newline, carriage return)
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(text)) return false;
+  // Check for replacement character or garbled encoding markers
+  if (text.includes('\uFFFD')) return false;
+  // Check for XML/binary patterns that shouldn't be in names
+  if (text.includes('<?xml') || text.includes('<BODY') || text.includes('<OBJECT')) return false;
+  // Check for excessive non-printable/non-latin characters (likely binary data)
+  const printablePattern = /^[\x20-\x7E\xA0-\xFF\u0100-\u024F\u0300-\u036F\u2000-\u206F\u2190-\u21FF\u2500-\u257F\s]+$/;
+  if (text.length > 20 && !printablePattern.test(text)) {
+    // Count how many chars are clearly non-text
+    const nonTextChars = (text.match(/[^\x20-\x7E\xA0-\xFF\u0100-\u024F\u0300-\u036F\s.,;:()\/\-_@#!?'"áéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇàèìòùÀÈÌÒÙ]/g) || []).length;
+    if (nonTextChars > text.length * 0.3) return false;
+  }
+  return true;
+}
+
+export { isReadableText };
+
+/**
  * Processor for the escalation CSV format.
  * 
  * Format:
@@ -111,35 +135,414 @@ function normalizeTime(t: string): string {
 
 /**
  * Determine if a row is an area header.
- * Area headers: first column is filled, rest are mostly empty, text is uppercase
+ * Area headers: first column is filled, rest are mostly empty, text is uppercase or long area-like name
  */
 function isAreaHeader(row: string[]): boolean {
   const first = (row[0] || '').trim();
   if (!first) return false;
-  // Must be mostly uppercase and not have a cargo (2nd column empty or same area-like)
+  // Must not have cargo-like data in columns 1-2
   const second = (row[1] || '').trim();
   const third = (row[2] || '').trim();
   // Area headers have empty cargo and nivel columns
-  if (second || third) return false;
+  if (second && third) return false;
   // Check it's not a separator row
   if (first.startsWith('<') || first === 'xxxxx') return false;
-  return first === first.toUpperCase() && first.length > 3;
+  // Area header if mostly uppercase and > 3 chars, OR if rest of row is empty
+  const nonEmptyCols = row.filter(c => c.trim()).length;
+  if (nonEmptyCols <= 2 && first.length > 3 && first === first.toUpperCase()) return true;
+  // Also detect area headers that are title-case but alone in the row
+  if (nonEmptyCols === 1 && first.length > 3) return true;
+  return false;
+}
+
+/**
+ * Detect and parse the "Time Cloud" tabular format.
+ * Format: Nome | Dia | Data início | Início | Data fim | Fim
+ * Optionally includes a "Plantonistas" side-table with full names and contacts,
+ * and an "Escalation" section with escalation levels.
+ */
+function parseTabularFormat(lines: string[]): EscalationCSVResult | null {
+  // Detect tabular format by looking for header row with "Nome" + "Data início" or "Início" + "Fim"
+  let headerRow = -1;
+  let nomeCol = -1;
+  let diaCol = -1;
+  let dataInicioCol = -1;
+  let inicioCol = -1;
+  let dataFimCol = -1;
+  let fimCol = -1;
+
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const row = parseCSVRow(lines[i]);
+    const rowLower = row.map(c => c.trim().toLowerCase());
+
+    // Look for header with "nome" and ("data início" or "data inicio" or "início" or "inicio") and "fim"
+    const hasNome = rowLower.some(c => c === 'nome');
+    const hasInicio = rowLower.some(c => c === 'início' || c === 'inicio' || c === 'data início' || c === 'data inicio');
+    const hasFim = rowLower.some(c => c === 'fim' || c === 'data fim');
+
+    if (hasNome && hasInicio && hasFim) {
+      headerRow = i;
+      for (let j = 0; j < row.length; j++) {
+        const cell = rowLower[j];
+        if (cell === 'nome') nomeCol = j;
+        if (cell === 'dia') diaCol = j;
+        if (cell === 'data início' || cell === 'data inicio') dataInicioCol = j;
+        if (cell === 'início' || cell === 'inicio') {
+          // Distinguish "Início" (time) from "Data início" (date)
+          // If "data início" is already found separately, this is the time column
+          if (dataInicioCol !== j && dataInicioCol !== -1) {
+            inicioCol = j;
+          } else if (dataInicioCol === -1) {
+            // Check if there's a separate "Data início" column
+            const hasDataInicio = rowLower.some(c => c === 'data início' || c === 'data inicio');
+            if (hasDataInicio) {
+              inicioCol = j;
+            } else {
+              dataInicioCol = j;
+            }
+          }
+        }
+        if (cell === 'data fim') dataFimCol = j;
+        if (cell === 'fim') {
+          if (dataFimCol !== j && dataFimCol !== -1) {
+            fimCol = j;
+          } else if (dataFimCol === -1) {
+            const hasDataFim = rowLower.some(c => c === 'data fim');
+            if (hasDataFim) {
+              fimCol = j;
+            } else {
+              dataFimCol = j;
+            }
+          }
+        }
+      }
+      break;
+    }
+  }
+
+  if (headerRow === -1 || nomeCol === -1) return null;
+
+  // Re-scan header to properly assign columns (handle case where "Início" is both date and time)
+  const headerRowParsed = parseCSVRow(lines[headerRow]);
+  const headerLower = headerRowParsed.map(c => c.trim().toLowerCase());
+
+  // Reset and re-detect more carefully
+  nomeCol = -1; diaCol = -1; dataInicioCol = -1; inicioCol = -1; dataFimCol = -1; fimCol = -1;
+  for (let j = 0; j < headerLower.length; j++) {
+    const cell = headerLower[j];
+    if (cell === 'nome' && nomeCol === -1) nomeCol = j;
+    else if ((cell === 'dia') && diaCol === -1) diaCol = j;
+    else if ((cell === 'data início' || cell === 'data inicio') && dataInicioCol === -1) dataInicioCol = j;
+    else if ((cell === 'início' || cell === 'inicio') && inicioCol === -1) inicioCol = j;
+    else if (cell === 'data fim' && dataFimCol === -1) dataFimCol = j;
+    else if (cell === 'fim' && fimCol === -1) fimCol = j;
+  }
+
+  // If no separate "inicio" time col, maybe the time is embedded in "Data início" or use the column after dataInicioCol
+  if (inicioCol === -1 && dataInicioCol !== -1) {
+    // "Data início" might actually be the date, and next col might be time
+    // Or this format has date and time in one column
+    inicioCol = dataInicioCol + 1;
+  }
+  if (fimCol === -1 && dataFimCol !== -1) {
+    fimCol = dataFimCol + 1;
+  }
+
+  // Now scan for the "Plantonistas" side-table to build a contacts map
+  const contactsMap: Map<string, { nomeCompleto: string; contato: string }> = new Map();
+  // And escalation levels map
+  const escalationMap: Map<number, { nome: string; contato: string }> = new Map();
+
+  for (let i = 0; i < lines.length; i++) {
+    const row = parseCSVRow(lines[i]);
+    // Look for "Plantonistas" label
+    for (let j = 0; j < row.length; j++) {
+      const cell = row[j].trim().toLowerCase();
+      if (cell === 'plantonistas' || cell === 'plantonista') {
+        // The rows nearby (same column area) contain name + contact pairs
+        // Scan from this row's position to find names in columns around j
+        // Typically: col j-1 or j+1 has names, and col j+2 has contacts
+        // Looking at the data: Names are in col ~j+1 (full names), contacts in col ~j+2
+        for (let k = 0; k < lines.length; k++) {
+          const sideRow = parseCSVRow(lines[k]);
+          // Look for cells in the area near j that have full names (all caps) and phone numbers
+          for (let c = j; c < Math.min(j + 4, sideRow.length); c++) {
+            const val = (sideRow[c] || '').trim();
+            const nextVal = (sideRow[c + 1] || '').trim();
+            // Full name (uppercase, at least 2 words) followed by phone
+            if (val && val === val.toUpperCase() && val.split(/\s+/).length >= 2 && /\d/.test(nextVal)) {
+              const shortName = buildShortName(val);
+              contactsMap.set(shortName, { nomeCompleto: val, contato: nextVal });
+            }
+          }
+        }
+        break;
+      }
+      if (cell === 'escalation' || cell === 'escalonamento') {
+        // Parse escalation levels: "1 - Leandro Silva" "24 99266-6604"
+        for (let k = i; k < Math.min(i + 10, lines.length); k++) {
+          const escRow = parseCSVRow(lines[k]);
+          for (let c = j; c < Math.min(j + 4, escRow.length); c++) {
+            const val = (escRow[c] || '').trim();
+            const levelMatch = val.match(/^(\d+)\s*[-–]\s*(.+)/);
+            if (levelMatch) {
+              const level = parseInt(levelMatch[1]);
+              const nome = levelMatch[2].trim();
+              const contato = (escRow[c + 1] || '').trim();
+              escalationMap.set(level, { nome, contato });
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Parse data rows
+  const entries: EscalationEntry[] = [];
+  const areasMap: Map<string, ParsedEscalation> = new Map();
+  // We'll create a single area "Sobreaviso" or detect from filename/sheet
+  // Since this format doesn't have explicit area headers, group by sheet/file name
+  // For now, use a default area name that can be overridden
+  const defaultAreaName = 'TIME CLOUD';
+
+  for (let i = headerRow + 1; i < lines.length; i++) {
+    const row = parseCSVRow(lines[i]);
+    const nome = (row[nomeCol] || '').trim();
+    if (!nome) continue;
+    // Skip header-like rows or section labels
+    if (nome.toLowerCase() === 'nome' || nome.toLowerCase() === 'plantonistas' || nome.toLowerCase() === 'escalation') continue;
+    // Skip corrupted/binary data
+    if (!isReadableText(nome)) continue;
+
+    // Extract date — format: "01/jul", "02/jul", etc.
+    const dataInicioRaw = dataInicioCol >= 0 ? (row[dataInicioCol] || '').trim() : '';
+    const inicioRaw = inicioCol >= 0 ? (row[inicioCol] || '').trim() : '';
+    const fimRaw = fimCol >= 0 ? (row[fimCol] || '').trim() : '';
+
+    if (!inicioRaw && !fimRaw) continue;
+
+    // Parse day from date string
+    const dia = parseDayFromDate(dataInicioRaw);
+    if (!dia) continue;
+
+    // Normalize time
+    const horarioInicio = normalizeTime(inicioRaw);
+    const horarioFim = normalizeTime(fimRaw);
+    if (!horarioInicio || !horarioFim) continue;
+
+    // Check if it's 24h (08:00-08:00 next day = 24h shift)
+    const is24h = (horarioInicio === horarioFim) || 
+                  (horarioInicio === '08:00' && horarioFim === '08:00');
+
+    // Find contact from the plantonistas map
+    const shortName = normalizeForComparison(nome);
+    let contato = '';
+    let nomeCompleto = nome;
+    for (const [key, val] of contactsMap.entries()) {
+      if (normalizeForComparison(key) === shortName || normalizeForComparison(val.nomeCompleto).includes(shortName)) {
+        contato = val.contato;
+        nomeCompleto = val.nomeCompleto;
+        break;
+      }
+    }
+    // Also try partial match
+    if (!contato) {
+      for (const [key, val] of contactsMap.entries()) {
+        const nameParts = shortName.split(' ');
+        const fullNameNorm = normalizeForComparison(val.nomeCompleto);
+        if (nameParts.length >= 2 && fullNameNorm.includes(nameParts[0]) && fullNameNorm.includes(nameParts[nameParts.length - 1])) {
+          contato = val.contato;
+          nomeCompleto = val.nomeCompleto;
+          break;
+        }
+      }
+    }
+
+    // Determine escalation level (default: direct/1st level)
+    const nivel = '1º Escalão';
+
+    const entry: EscalationEntry = {
+      area: defaultAreaName,
+      colaborador: nome,
+      cargo: '',
+      nivel,
+      contato,
+      dia,
+      horarioInicio,
+      horarioFim,
+      is24h,
+    };
+    entries.push(entry);
+
+    // Build areas structure
+    if (!areasMap.has(defaultAreaName)) {
+      areasMap.set(defaultAreaName, { area: defaultAreaName, colaboradores: [] });
+    }
+    const areaObj = areasMap.get(defaultAreaName)!;
+    let colab = areaObj.colaboradores.find(c => normalizeForComparison(c.nome) === normalizeForComparison(nome));
+    if (!colab) {
+      colab = { nome, cargo: '', nivel, contato, escalas: [] };
+      areaObj.colaboradores.push(colab);
+    }
+    colab.escalas.push({ dia, horarioInicio, horarioFim, is24h });
+  }
+
+  // Add escalation entries (for the escalation chain contacts)
+  for (const [level, data] of escalationMap.entries()) {
+    // These are escalation contacts, not shift entries — store them as metadata
+    // Add them as collaborators with a special nivel
+    if (!areasMap.has(defaultAreaName)) {
+      areasMap.set(defaultAreaName, { area: defaultAreaName, colaboradores: [] });
+    }
+    const areaObj = areasMap.get(defaultAreaName)!;
+    const existing = areaObj.colaboradores.find(c => normalizeForComparison(c.nome) === normalizeForComparison(data.nome));
+    if (existing) {
+      existing.nivel = `${level}º Escalão`;
+      existing.contato = existing.contato || data.contato;
+      // Update entries too
+      entries.filter(e => normalizeForComparison(e.colaborador) === normalizeForComparison(data.nome))
+        .forEach(e => { e.nivel = `${level}º Escalão`; e.contato = e.contato || data.contato; });
+    }
+  }
+
+  const areas = Array.from(areasMap.values());
+  return { areas, entries, errors: [] };
+}
+
+/**
+ * Parse day of month from date strings like "01/jul", "15/ago", "1/jul", "2026-07-01", "01/07"
+ */
+function parseDayFromDate(raw: string): number | null {
+  if (!raw) return null;
+  const cleaned = raw.trim();
+
+  // Format: "01/jul", "1/jul", "15/ago"
+  const brMatch = cleaned.match(/^(\d{1,2})\/(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i);
+  if (brMatch) return parseInt(brMatch[1]);
+
+  // Format: "01/07", "1/7"
+  const numMatch = cleaned.match(/^(\d{1,2})\/(\d{1,2})/);
+  if (numMatch) return parseInt(numMatch[1]);
+
+  // Format: "2026-07-01"
+  const isoMatch = cleaned.match(/^\d{4}-\d{2}-(\d{2})/);
+  if (isoMatch) return parseInt(isoMatch[1]);
+
+  // Just a number
+  const numOnly = parseInt(cleaned);
+  if (!isNaN(numOnly) && numOnly >= 1 && numOnly <= 31) return numOnly;
+
+  return null;
+}
+
+/**
+ * Build a short name key from a full name for matching.
+ * "VITOR MORAIS CLAUZ" → "vitor clauz" (first + last)
+ */
+function buildShortName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length <= 2) return fullName.toLowerCase();
+  return `${parts[0]} ${parts[parts.length - 1]}`.toLowerCase();
 }
 
 /**
  * Parse the escalation CSV content.
+ * Auto-detects column layout by scanning header rows for day numbers or date patterns.
+ * Also supports the "Time Cloud" tabular format (one row per shift).
  */
-export function parseEscalationCSV(csvContent: string): EscalationCSVResult {
+/**
+ * Parse the escalation CSV content.
+ * Auto-detects column layout by scanning header rows for day numbers or date patterns.
+ * Also supports the "Time Cloud" tabular format (one row per shift).
+ * @param csvContent - The CSV content to parse
+ * @param sheetName - Optional sheet name to use as area name for tabular format
+ */
+export function parseEscalationCSV(csvContent: string, sheetName?: string): EscalationCSVResult {
   const errors: string[] = [];
   const areas: ParsedEscalation[] = [];
   const entries: EscalationEntry[] = [];
 
-  // Split into lines and parse CSV manually (handling commas in fields)
+  // Split into lines and parse CSV (handling quoted fields)
   const lines = csvContent.split(/\r?\n/);
-  
-  // Skip header rows (first 3 lines: title, column names, weekday names)
+
+  // Try tabular format first (Time Cloud format: Nome | Dia | Data início | Início | Data fim | Fim)
+  const tabularResult = parseTabularFormat(lines);
+  if (tabularResult && tabularResult.entries.length > 0) {
+    // Use sheet name as area name if provided
+    if (sheetName) {
+      const areaName = sheetName.trim();
+      for (const area of tabularResult.areas) {
+        area.area = areaName;
+      }
+      for (const entry of tabularResult.entries) {
+        entry.area = areaName;
+      }
+    }
+    return tabularResult;
+  }
+
+  // === Auto-detect column layout ===
+  // Look for a header row that contains day numbers (1,2,3...31) or day names (seg, ter, qua...)
+  let dayStartCol = 5; // default
+  let nameCol = 0;
+  let cargoCol = 1;
+  let nivelCol = 2;
+  let contatoCol = 4;
   let startLine = 0;
-  for (let i = 0; i < Math.min(5, lines.length); i++) {
+  let headerDetected = false;
+
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const row = parseCSVRow(lines[i]);
+    const rowLower = row.map(c => c.trim().toLowerCase());
+
+    // Detect header row with column names
+    if (rowLower.some(c => c === 'colaborador' || c === 'colaboradores' || c === 'nome' || c === 'plantonista')) {
+      // Found the column header row
+      for (let j = 0; j < row.length; j++) {
+        const cell = rowLower[j];
+        if (cell === 'colaborador' || cell === 'colaboradores' || cell === 'nome' || cell === 'plantonista') nameCol = j;
+        if (cell === 'cargo' || cell === 'função' || cell === 'funcao') cargoCol = j;
+        if (cell === 'nível' || cell === 'nivel' || cell === 'escalão' || cell === 'escalao') nivelCol = j;
+        if (cell === 'contato' || cell === 'contato corporativo' || cell === 'telefone' || cell === 'celular') contatoCol = j;
+      }
+      startLine = i + 1;
+      headerDetected = true;
+
+      // Find where day columns start: look for columns with numbers 1-31 or day-of-week names
+      for (let j = 0; j < row.length; j++) {
+        const cell = row[j].trim();
+        if (/^[0-9]{1,2}$/.test(cell) && parseInt(cell) >= 1 && parseInt(cell) <= 31) {
+          dayStartCol = j;
+          break;
+        }
+        // Also detect date-like headers: "01/07", "2026-07-01", etc.
+        if (/^\d{1,2}\/\d{1,2}/.test(cell) || /^\d{4}-\d{2}-\d{2}/.test(cell)) {
+          dayStartCol = j;
+          break;
+        }
+      }
+      continue;
+    }
+
+    // Alternative: detect by looking for row with many numbers (day row under header)
+    if (!headerDetected && rowLower.some(c => /^(seg|ter|qua|qui|sex|sab|dom|segunda|terça|quarta|quinta|sexta|sábado|domingo)/.test(c))) {
+      startLine = i + 1;
+      // The row above might be the day numbers
+      if (i > 0) {
+        const prevRow = parseCSVRow(lines[i - 1]);
+        for (let j = 0; j < prevRow.length; j++) {
+          const cell = prevRow[j].trim();
+          if (/^[0-9]{1,2}$/.test(cell) && parseInt(cell) >= 1 && parseInt(cell) <= 31) {
+            dayStartCol = j;
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Legacy detection: skip known header patterns
     if (lines[i].includes('ESCALONAMENTO VIGENTE') || lines[i].includes('Colaboradores') || lines[i].includes('Contato Corporativo')) {
       startLine = i + 1;
     }
@@ -151,7 +554,7 @@ export function parseEscalationCSV(csvContent: string): EscalationCSVResult {
     const line = lines[i];
     if (!line.trim()) continue;
 
-    const row = line.split(',');
+    const row = parseCSVRow(line);
 
     // Check if this is an area header
     if (isAreaHeader(row)) {
@@ -161,26 +564,36 @@ export function parseEscalationCSV(csvContent: string): EscalationCSVResult {
     }
 
     // Skip empty-ish rows or placeholder rows
-    const nome = (row[0] || '').trim();
+    const nome = (row[nameCol] || '').trim();
     if (!nome || nome === 'xxxxx' || nome.startsWith('<')) continue;
+    // Skip corrupted/binary data
+    if (!isReadableText(nome)) continue;
 
     // This is a collaborator row
     if (!currentArea) continue;
 
-    const cargo = (row[1] || '').trim();
-    const nivel = (row[2] || '').trim();
-    const contato = (row[4] || '').trim();
+    const cargo = (row[cargoCol] || '').trim();
+    const nivel = (row[nivelCol] || '').trim();
+    const contato = (row[contatoCol] || '').trim();
 
-    // Parse day columns (columns 5 onwards = day 1, day 2, ...)
+    // Parse day columns
     const escalas: Array<{ dia: number; horarioInicio: string; horarioFim: string; is24h: boolean }> = [];
 
     for (let dayIdx = 0; dayIdx < 31; dayIdx++) {
-      const colIdx = 5 + dayIdx; // Day columns start at index 5
+      const colIdx = dayStartCol + dayIdx;
+      if (colIdx >= row.length) break;
       const cellValue = (row[colIdx] || '').trim();
       
       if (!cellValue || cellValue === '—' || cellValue === '-') continue;
 
-      const parsed = parseTimeRange(cellValue);
+      // Check if cell contains a time pattern or "X" / "x" (marking presence)
+      let parsed = parseTimeRange(cellValue);
+      
+      // If cell just has "X" or "x" or "S" (sobreaviso), treat as 24h
+      if (!parsed && /^[xXsS✓✔]$/.test(cellValue)) {
+        parsed = { inicio: '00:00', fim: '23:59', is24h: true };
+      }
+
       if (parsed) {
         escalas.push({
           dia: dayIdx + 1,
@@ -213,6 +626,29 @@ export function parseEscalationCSV(csvContent: string): EscalationCSVResult {
   }
 
   return { areas, entries, errors };
+}
+
+/**
+ * Parse a CSV row handling quoted fields properly.
+ */
+function parseCSVRow(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else { inQuotes = !inQuotes; }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
 }
 
 /**

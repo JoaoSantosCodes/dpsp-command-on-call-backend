@@ -10,7 +10,7 @@ import { MonitorMappingService } from './services/monitor-mapping';
 import { IncidentHistoryService } from './services/incident-history';
 import { CSVProcessor } from './services/csv-processor';
 import { normalizeForComparison, hasGarbledCharacters } from '../shared/normalize';
-import { parseEscalationCSV, getCurrentOnCallForArea, EscalationEntry } from './services/escalation-csv-processor';
+import { parseEscalationCSV, getCurrentOnCallForArea, EscalationEntry, isReadableText } from './services/escalation-csv-processor';
 import { getAreasForMonitor, getPrimaryAreaForMonitor } from './services/monitor-area-mapping';
 import { AuthService } from './services/auth';
 import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, createAreaFilterMiddleware, getEffectiveAreaFilter, getEffectiveAreas, writeBlockMiddleware } from './middleware/auth';
@@ -109,6 +109,49 @@ export function createServer(deps: ServerDependencies): Express {
 
   // GET /api/status — Status de conexão com Datadog
   app.get('/api/status', (_req: Request, res: Response) => {
+
+  // POST /api/admin/cleanup-corrupted — Remove dados corrompidos (endpoint emergencial, remover após uso)
+  app.post('/api/admin/cleanup-corrupted', (_req: Request, res: Response) => {
+    let usersRemoved = 0;
+    let areasRemoved = 0;
+    let schedulesRemoved = 0;
+
+    // Clean corrupted users
+    if (deps.userRepository) {
+      const allUsers = deps.userRepository.getAll();
+      for (const user of allUsers) {
+        if (!isReadableText(user.nome) || !isReadableText(user.username)) {
+          deps.userRepository.delete(user.id);
+          usersRemoved++;
+        }
+      }
+    }
+
+    // Clean corrupted areas
+    if (deps.areaRepository && deps.db) {
+      const allAreas = deps.areaRepository.getAll();
+      for (const area of allAreas) {
+        if (!isReadableText(area.nome) || !isReadableText(area.codigo)) {
+          try { deps.db.prepare('DELETE FROM areas WHERE id = ?').run(area.id); areasRemoved++; } catch { /* skip */ }
+        }
+      }
+    }
+
+    // Clean corrupted escalation schedules
+    if (deps.db) {
+      try {
+        const schedules = deps.db.prepare('SELECT id, area, colaborador FROM escalation_schedules').all() as any[];
+        for (const sched of schedules) {
+          if (!isReadableText(sched.area) || !isReadableText(sched.colaborador)) {
+            deps.db.prepare('DELETE FROM escalation_schedules WHERE id = ?').run(sched.id);
+            schedulesRemoved++;
+          }
+        }
+      } catch { /* table may not exist */ }
+    }
+
+    res.json({ success: true, usersRemoved, areasRemoved, schedulesRemoved });
+  });
     const isRunning = deps.datadogPollingService.isRunning;
     res.json({
       datadog: isRunning ? 'connected' : 'disconnected',
@@ -118,7 +161,27 @@ export function createServer(deps: ServerDependencies): Express {
 
   // GET /api/monitors — Listar monitores com estado
   app.get('/api/monitors', (_req: Request, res: Response) => {
-    const monitors = deps.datadogPollingService.getMonitors();
+    let monitors = deps.datadogPollingService.getMonitors();
+    
+    // Fallback: if no monitors from Datadog polling, load from DB (mock/seeded data)
+    if ((!monitors || monitors.length === 0) && deps.db) {
+      try {
+        const dbMonitors = deps.db.prepare('SELECT id, name, state, tags, priority, area_codigo FROM monitors').all() as any[];
+        if (dbMonitors.length > 0) {
+          monitors = dbMonitors.map((m: any) => ({
+            id: m.id,
+            name: m.name,
+            state: m.state || 'OK',
+            tags: m.tags ? m.tags.split(',').map((t: string) => t.trim()) : [],
+            priority: m.priority || 'P1',
+            areaCodigo: m.area_codigo,
+            teamId: m.area_codigo || '',
+            lastUpdated: new Date(),
+          }));
+        }
+      } catch { /* table may not exist */ }
+    }
+    
     res.json(monitors);
   });
 
@@ -359,28 +422,353 @@ export function createServer(deps: ServerDependencies): Express {
     res.json(importResult);
   });
 
-  // POST /api/escalation/import — Importar CSV de escalonamento (formato área → colaboradores → dias)
+  // POST /api/escalation/import — Importar CSV/XLSX de escalonamento (formato área → colaboradores → dias)
   app.post('/api/escalation/import', upload.single('file'), async (req: Request, res: Response) => {
     if (!req.file) {
       res.status(400).json({ error: 'Nenhum arquivo enviado' });
       return;
     }
 
-    // Task 3.1: Detect and strip UTF-8 BOM, with fallback to latin1
     let csvContent: string;
     const buffer = req.file.buffer;
-    // Try UTF-8 first
-    let decoded = buffer.toString('utf-8');
-    // Strip BOM if present
-    if (decoded.charCodeAt(0) === 0xFEFF) {
-      decoded = decoded.slice(1);
-    }
-    // Check for garbled characters indicating wrong encoding
-    if (hasGarbledCharacters(decoded)) {
-      // Fallback to latin1 decoding
-      csvContent = buffer.toString('latin1');
+    const fileName = (req.file.originalname || '').toLowerCase();
+
+    // If XLSX/XLS file, convert to CSV first
+    if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+      try {
+        const XLSX = require('xlsx');
+        const workbook = XLSX.read(buffer, { type: 'buffer' });
+        
+        // Process all sheets — each sheet may represent a different area
+        const allResults: { csv: string; sheetName: string }[] = [];
+        for (const sheetName of workbook.SheetNames) {
+          const sheet = workbook.Sheets[sheetName];
+          const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+          allResults.push({ csv, sheetName });
+        }
+
+        if (allResults.length === 1) {
+          csvContent = allResults[0].csv;
+          
+          // Validate that CSV content is readable (not binary garbage from encrypted file)
+          if (!isReadableText(csvContent.substring(0, 500))) {
+            res.status(400).json({ error: 'Arquivo parece estar criptografado ou corrompido. Remova a proteção por senha antes de importar.' });
+            return;
+          }
+          // Parse with sheet name for tabular format support
+          const singleResult = parseEscalationCSV(csvContent, allResults[0].sheetName);
+          if (singleResult.entries.length > 0) {
+            // Use singleResult directly — skip normal parsing below
+            const resultData = singleResult;
+            
+            // Store in memory for on-call lookups
+            escalationEntries = resultData.entries;
+
+            // Persist to database
+            if (deps.db) {
+              const now = new Date();
+              const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+              const brasiliaDate = new Date(brasiliaStr);
+              const currentMonth = brasiliaDate.getMonth() + 1;
+              const currentYear = brasiliaDate.getFullYear();
+
+              deps.db.prepare('DELETE FROM escalation_schedules WHERE mes = ? AND ano = ?').run(currentMonth, currentYear);
+
+              const insert = deps.db.prepare(
+                'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+              );
+
+              const insertAll = deps.db.transaction(() => {
+                for (const entry of resultData.entries) {
+                  insert.run(entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0);
+                }
+              });
+              insertAll();
+            }
+
+            // Auto-create areas/users (same logic as below)
+            let areasCreated = 0;
+            let usersCreated = 0;
+            let usersUpdated = 0;
+
+            if (deps.areaRepository && deps.userRepository) {
+              const areaRepo = deps.areaRepository;
+              const userRepo = deps.userRepository;
+              const bcrypt = require('bcrypt');
+
+              for (const parsedArea of resultData.areas) {
+                const allAreas = areaRepo.getAll();
+                const normalizedIncoming = normalizeForComparison(parsedArea.area);
+                const matchingArea = allAreas.find(
+                  (a) => normalizeForComparison(a.nome) === normalizedIncoming || normalizeForComparison(a.codigo) === normalizedIncoming
+                );
+
+                let areaCodigo: string;
+                if (matchingArea) {
+                  areaCodigo = matchingArea.codigo;
+                } else {
+                  areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+                  try {
+                    areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    areasCreated++;
+                  } catch { /* skip */ }
+                }
+
+                for (const colab of parsedArea.colaboradores) {
+                  if (!colab.nome || colab.nome === 'xxxxx' || !isReadableText(colab.nome)) continue;
+                  const username = colab.nome.toLowerCase()
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/^\.|\.$/, '').substring(0, 30);
+
+                  const existing = userRepo.getByUsername(username);
+                  if (existing) {
+                    const updates: any = {};
+                    if (areaCodigo && existing.areaCodigo !== areaCodigo) updates.areaCodigo = areaCodigo;
+                    if (colab.cargo && existing.cargo !== colab.cargo) updates.cargo = colab.cargo;
+                    if (colab.contato && existing.contato !== colab.contato) updates.contato = colab.contato;
+                    if (Object.keys(updates).length > 0) {
+                      try { userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
+                    }
+                  } else {
+                    const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+                    const senhaHash = bcrypt.hashSync('plantonista123', 10);
+                    try {
+                      userRepo.create({ codigo, areaCodigo, areaSolicitada: null, nome: colab.nome, perfil: 'Plantonista', nivelEscalonamento: null, cargo: colab.cargo || null, contato: colab.contato || null, username, senhaHash, ativo: true, aprovado: true });
+                      usersCreated++;
+                    } catch { /* skip */ }
+                  }
+                }
+              }
+            }
+
+            // Auto-create Periodos + Escalas
+            let periodosCreated = 0;
+            let escalasCreated = 0;
+
+            if (deps.periodoRepository && deps.escalaRepository && deps.areaRepository && deps.userRepository) {
+              const periodoRepo = deps.periodoRepository;
+              const escalaRepo = deps.escalaRepository;
+              const areaRepo = deps.areaRepository;
+              const userRepo = deps.userRepository;
+
+              const now = new Date();
+              const brasiliaStr2 = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+              const brasiliaDate2 = new Date(brasiliaStr2);
+              const importMonth = brasiliaDate2.getMonth() + 1;
+              const importYear = brasiliaDate2.getFullYear();
+
+              for (const entry of resultData.entries) {
+                const allAreas = areaRepo.getAll();
+                const areaNorm = normalizeForComparison(entry.area);
+                const matchedArea = allAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
+                if (!matchedArea) continue;
+
+                const areaCodigo = matchedArea.codigo;
+                const dateStr = `${importYear}-${String(importMonth).padStart(2, '0')}-${String(entry.dia).padStart(2, '0')}`;
+                const horarios = entry.is24h ? '24hs' : `${entry.horarioInicio} às ${entry.horarioFim}`;
+
+                const existingPeriodos = periodoRepo.getByArea(areaCodigo);
+                let periodo = existingPeriodos.find((p: any) => p.data === dateStr && p.horarios === horarios);
+                if (!periodo) {
+                  const periodoCodigo = `PER-${areaCodigo.substring(0, 10)}-${dateStr}-${Math.random().toString(36).substring(2, 5)}`;
+                  try { periodo = periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo }); periodosCreated++; } catch { continue; }
+                }
+
+                const userNorm = normalizeForComparison(entry.colaborador);
+                const allUsers = userRepo.getAll();
+                const matchedUser = allUsers.find((u: any) => normalizeForComparison(u.nome) === userNorm && u.areaCodigo === areaCodigo);
+                if (!matchedUser) continue;
+
+                const existingEscalas = escalaRepo.getByArea(areaCodigo);
+                const alreadyExists = existingEscalas.some((e: any) => e.periodoCodigo === periodo.codigo && e.usuarioCodigo === matchedUser.codigo);
+                if (alreadyExists) continue;
+
+                const escalaCodigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+                try { escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo }); escalasCreated++; } catch { /* skip */ }
+              }
+            }
+
+            res.json({
+              success: true,
+              areas: resultData.areas.map(a => ({ nome: a.area, colaboradores: a.colaboradores.length })),
+              totalEntries: resultData.entries.length,
+              areasCreated,
+              usersCreated,
+              usersUpdated,
+              periodosCreated,
+              escalasCreated,
+              errors: resultData.errors,
+            });
+            return;
+          }
+        } else {
+          // Multiple sheets: combine results from all sheets
+          const combinedResult: { areas: any[]; entries: any[]; errors: string[] } = { areas: [], entries: [], errors: [] };
+          for (const { csv, sheetName } of allResults) {
+            const sheetResult = parseEscalationCSV(csv, sheetName);
+            combinedResult.areas.push(...sheetResult.areas);
+            combinedResult.entries.push(...sheetResult.entries);
+            combinedResult.errors.push(...sheetResult.errors);
+          }
+
+          if (combinedResult.entries.length > 0) {
+            // Store in memory
+            escalationEntries = combinedResult.entries;
+
+            if (deps.db) {
+              const now = new Date();
+              const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+              const brasiliaDate = new Date(brasiliaStr);
+              const currentMonth = brasiliaDate.getMonth() + 1;
+              const currentYear = brasiliaDate.getFullYear();
+
+              deps.db.prepare('DELETE FROM escalation_schedules WHERE mes = ? AND ano = ?').run(currentMonth, currentYear);
+
+              const insert = deps.db.prepare(
+                'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+              );
+
+              const insertAll = deps.db.transaction(() => {
+                for (const entry of combinedResult.entries) {
+                  insert.run(entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0);
+                }
+              });
+              insertAll();
+            }
+
+            // Auto-create areas/users
+            let areasCreated = 0;
+            let usersCreated = 0;
+            let usersUpdated = 0;
+
+            if (deps.areaRepository && deps.userRepository) {
+              const areaRepo = deps.areaRepository;
+              const userRepo = deps.userRepository;
+              const bcrypt = require('bcrypt');
+
+              for (const parsedArea of combinedResult.areas) {
+                const allAreas = areaRepo.getAll();
+                const normalizedIncoming = normalizeForComparison(parsedArea.area);
+                const matchingArea = allAreas.find(
+                  (a) => normalizeForComparison(a.nome) === normalizedIncoming || normalizeForComparison(a.codigo) === normalizedIncoming
+                );
+
+                let areaCodigo: string;
+                if (matchingArea) {
+                  areaCodigo = matchingArea.codigo;
+                } else {
+                  areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+                  try {
+                    areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    areasCreated++;
+                  } catch { /* skip */ }
+                }
+
+                for (const colab of parsedArea.colaboradores) {
+                  if (!colab.nome || colab.nome === 'xxxxx' || !isReadableText(colab.nome)) continue;
+                  const username = colab.nome.toLowerCase()
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/^\.|\.$/, '').substring(0, 30);
+
+                  const existing = userRepo.getByUsername(username);
+                  if (existing) {
+                    const updates: any = {};
+                    if (areaCodigo && existing.areaCodigo !== areaCodigo) updates.areaCodigo = areaCodigo;
+                    if (colab.cargo && existing.cargo !== colab.cargo) updates.cargo = colab.cargo;
+                    if (colab.contato && existing.contato !== colab.contato) updates.contato = colab.contato;
+                    if (Object.keys(updates).length > 0) {
+                      try { userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
+                    }
+                  } else {
+                    const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+                    const senhaHash = bcrypt.hashSync('plantonista123', 10);
+                    try {
+                      userRepo.create({ codigo, areaCodigo, areaSolicitada: null, nome: colab.nome, perfil: 'Plantonista', nivelEscalonamento: null, cargo: colab.cargo || null, contato: colab.contato || null, username, senhaHash, ativo: true, aprovado: true });
+                      usersCreated++;
+                    } catch { /* skip */ }
+                  }
+                }
+              }
+            }
+
+            // Auto-create Periodos + Escalas
+            let periodosCreated = 0;
+            let escalasCreated = 0;
+
+            if (deps.periodoRepository && deps.escalaRepository && deps.areaRepository && deps.userRepository) {
+              const periodoRepo = deps.periodoRepository;
+              const escalaRepo = deps.escalaRepository;
+              const areaRepo = deps.areaRepository;
+              const userRepo = deps.userRepository;
+
+              const now = new Date();
+              const brasiliaStr2 = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+              const brasiliaDate2 = new Date(brasiliaStr2);
+              const importMonth = brasiliaDate2.getMonth() + 1;
+              const importYear = brasiliaDate2.getFullYear();
+
+              for (const entry of combinedResult.entries) {
+                const allAreas = areaRepo.getAll();
+                const areaNorm = normalizeForComparison(entry.area);
+                const matchedArea = allAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
+                if (!matchedArea) continue;
+
+                const areaCodigo = matchedArea.codigo;
+                const dateStr = `${importYear}-${String(importMonth).padStart(2, '0')}-${String(entry.dia).padStart(2, '0')}`;
+                const horarios = entry.is24h ? '24hs' : `${entry.horarioInicio} às ${entry.horarioFim}`;
+
+                const existingPeriodos = periodoRepo.getByArea(areaCodigo);
+                let periodo = existingPeriodos.find((p: any) => p.data === dateStr && p.horarios === horarios);
+                if (!periodo) {
+                  const periodoCodigo = `PER-${areaCodigo.substring(0, 10)}-${dateStr}-${Math.random().toString(36).substring(2, 5)}`;
+                  try { periodo = periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo }); periodosCreated++; } catch { continue; }
+                }
+
+                const userNorm = normalizeForComparison(entry.colaborador);
+                const allUsers = userRepo.getAll();
+                const matchedUser = allUsers.find((u: any) => normalizeForComparison(u.nome) === userNorm && u.areaCodigo === areaCodigo);
+                if (!matchedUser) continue;
+
+                const existingEscalas = escalaRepo.getByArea(areaCodigo);
+                const alreadyExists = existingEscalas.some((e: any) => e.periodoCodigo === periodo.codigo && e.usuarioCodigo === matchedUser.codigo);
+                if (alreadyExists) continue;
+
+                const escalaCodigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+                try { escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo }); escalasCreated++; } catch { /* skip */ }
+              }
+            }
+
+            res.json({
+              success: true,
+              areas: combinedResult.areas.map(a => ({ nome: a.area, colaboradores: a.colaboradores.length })),
+              totalEntries: combinedResult.entries.length,
+              areasCreated,
+              usersCreated,
+              usersUpdated,
+              periodosCreated,
+              escalasCreated,
+              errors: combinedResult.errors,
+            });
+            return;
+          }
+          // If no entries from multi-sheet, fall through to single-sheet processing
+          csvContent = allResults[0].csv;
+        }
+      } catch (err) {
+        res.status(400).json({ error: 'Erro ao processar arquivo Excel. Verifique o formato.' });
+        return;
+      }
     } else {
-      csvContent = decoded;
+      // CSV handling: Detect and strip UTF-8 BOM, with fallback to latin1
+      let decoded = buffer.toString('utf-8');
+      if (decoded.charCodeAt(0) === 0xFEFF) {
+        decoded = decoded.slice(1);
+      }
+      if (hasGarbledCharacters(decoded)) {
+        csvContent = buffer.toString('latin1');
+      } else {
+        csvContent = decoded;
+      }
     }
 
     const result = parseEscalationCSV(csvContent);
@@ -424,9 +812,10 @@ export function createServer(deps: ServerDependencies): Express {
       insertAll();
     }
 
-    // Auto-create areas and users from CSV data
+    // Auto-create or update areas and users from CSV data (merge/de-para)
     let areasCreated = 0;
     let usersCreated = 0;
+    let usersUpdated = 0;
 
     if (deps.areaRepository && deps.userRepository) {
       const areaRepo = deps.areaRepository;
@@ -434,7 +823,7 @@ export function createServer(deps: ServerDependencies): Express {
       const bcrypt = require('bcrypt');
 
       for (const parsedArea of result.areas) {
-        // Task 3.2: Use normalized comparison to find existing areas
+        // Use normalized comparison to find existing areas
         const allAreas = areaRepo.getAll();
         const normalizedIncoming = normalizeForComparison(parsedArea.area);
         const matchingArea = allAreas.find(
@@ -453,7 +842,7 @@ export function createServer(deps: ServerDependencies): Express {
         }
 
         for (const colab of parsedArea.colaboradores) {
-          if (!colab.nome || colab.nome === 'xxxxx') continue;
+          if (!colab.nome || colab.nome === 'xxxxx' || !isReadableText(colab.nome)) continue;
 
           const username = colab.nome.toLowerCase()
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -462,7 +851,16 @@ export function createServer(deps: ServerDependencies): Express {
             .substring(0, 30);
 
           const existing = userRepo.getByUsername(username);
-          if (!existing) {
+          if (existing) {
+            // MERGE: Update area, cargo, contato if changed
+            const updates: any = {};
+            if (areaCodigo && existing.areaCodigo !== areaCodigo) updates.areaCodigo = areaCodigo;
+            if (colab.cargo && existing.cargo !== colab.cargo) updates.cargo = colab.cargo;
+            if (colab.contato && existing.contato !== colab.contato) updates.contato = colab.contato;
+            if (Object.keys(updates).length > 0) {
+              try { userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
+            }
+          } else {
             const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
             const senhaHash = bcrypt.hashSync('plantonista123', 10);
             try {
@@ -474,7 +872,7 @@ export function createServer(deps: ServerDependencies): Express {
                 perfil: 'Plantonista',
                 nivelEscalonamento: null,
                 cargo: colab.cargo || null,
-                contato: null,
+                contato: colab.contato || null,
                 username,
                 senhaHash,
                 ativo: true,
@@ -487,12 +885,72 @@ export function createServer(deps: ServerDependencies): Express {
       }
     }
 
+    // Auto-create Periodos + Escalas in formal tables (Tb_Periodos / Tb_Escalas)
+    let periodosCreated = 0;
+    let escalasCreated = 0;
+
+    if (deps.periodoRepository && deps.escalaRepository && deps.areaRepository && deps.userRepository) {
+      const periodoRepo = deps.periodoRepository;
+      const escalaRepo = deps.escalaRepository;
+      const areaRepo = deps.areaRepository;
+      const userRepo = deps.userRepository;
+
+      const now = new Date();
+      const brasiliaStr2 = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+      const brasiliaDate2 = new Date(brasiliaStr2);
+      const importMonth = brasiliaDate2.getMonth() + 1;
+      const importYear = brasiliaDate2.getFullYear();
+
+      for (const entry of result.entries) {
+        // Find area codigo
+        const allAreas = areaRepo.getAll();
+        const areaNorm = normalizeForComparison(entry.area);
+        const matchedArea = allAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
+        if (!matchedArea) continue;
+
+        const areaCodigo = matchedArea.codigo;
+        const dateStr = `${importYear}-${String(importMonth).padStart(2, '0')}-${String(entry.dia).padStart(2, '0')}`;
+        const horarios = entry.is24h ? '24hs' : `${entry.horarioInicio} às ${entry.horarioFim}`;
+
+        // Find or create periodo
+        const existingPeriodos = periodoRepo.getByArea(areaCodigo);
+        let periodo = existingPeriodos.find((p: any) => p.data === dateStr && p.horarios === horarios);
+        if (!periodo) {
+          const periodoCodigo = `PER-${areaCodigo.substring(0, 10)}-${dateStr}-${Math.random().toString(36).substring(2, 5)}`;
+          try {
+            periodo = periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo });
+            periodosCreated++;
+          } catch { continue; }
+        }
+
+        // Find user by name
+        const userNorm = normalizeForComparison(entry.colaborador);
+        const allUsers = userRepo.getAll();
+        const matchedUser = allUsers.find((u: any) => normalizeForComparison(u.nome) === userNorm && u.areaCodigo === areaCodigo);
+        if (!matchedUser) continue;
+
+        // Check if escala already exists for this combo
+        const existingEscalas = escalaRepo.getByArea(areaCodigo);
+        const alreadyExists = existingEscalas.some((e: any) => e.periodoCodigo === periodo.codigo && e.usuarioCodigo === matchedUser.codigo);
+        if (alreadyExists) continue;
+
+        const escalaCodigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        try {
+          escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo });
+          escalasCreated++;
+        } catch { /* skip */ }
+      }
+    }
+
     res.json({
       success: true,
       areas: result.areas.map(a => ({ nome: a.area, colaboradores: a.colaboradores.length })),
       totalEntries: result.entries.length,
       areasCreated,
       usersCreated,
+      usersUpdated,
+      periodosCreated,
+      escalasCreated,
       errors: result.errors,
     });
   });
@@ -576,15 +1034,22 @@ export function createServer(deps: ServerDependencies): Express {
     res.json(areas);
   });
 
-  // GET /api/escalation/template — Download do template CSV
+  // GET /api/escalation/template — Download do template XLSX
   app.get('/api/escalation/template', (_req: Request, res: Response) => {
     const fs = require('fs');
     const path = require('path');
-    const templatePath = path.join(process.cwd(), 'templates', 'Template_Escalonamento.csv');
-    if (fs.existsSync(templatePath)) {
+    // Try XLSX first, then CSV fallback
+    const xlsxPath = path.join(process.cwd(), 'templates', 'Template_Escalonamento.xlsx');
+    const csvPath = path.join(process.cwd(), 'templates', 'Template_Escalonamento.csv');
+    
+    if (fs.existsSync(xlsxPath)) {
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename=Template_Escalonamento.xlsx');
+      res.sendFile(xlsxPath);
+    } else if (fs.existsSync(csvPath)) {
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', 'attachment; filename=Template_Escalonamento.csv');
-      res.sendFile(templatePath);
+      res.sendFile(csvPath);
     } else {
       res.status(404).json({ error: 'Template não encontrado' });
     }
@@ -710,7 +1175,27 @@ export function createServer(deps: ServerDependencies): Express {
 
     // GET /api/dashboard/monitors-by-area — Monitors grouped by area with on-call/fallback status
     app.get('/api/dashboard/monitors-by-area', (req: Request, res: Response) => {
-      const monitors = deps.datadogPollingService.getMonitors();
+      let monitors = deps.datadogPollingService.getMonitors();
+      
+      // Fallback: if no monitors from Datadog, load from DB
+      if ((!monitors || monitors.length === 0) && deps.db) {
+        try {
+          const dbMonitors = deps.db.prepare('SELECT id, name, state, tags, priority, area_codigo FROM monitors').all() as any[];
+          if (dbMonitors.length > 0) {
+            monitors = dbMonitors.map((m: any) => ({
+              id: m.id,
+              name: m.name,
+              state: m.state || 'OK',
+              tags: m.tags ? m.tags.split(',').map((t: string) => t.trim()) : [],
+              priority: m.priority || 'P1',
+              areaCodigo: m.area_codigo,
+              teamId: m.area_codigo || '',
+              lastUpdated: new Date(),
+            }));
+          }
+        } catch { /* table may not exist */ }
+      }
+      
       const manualMappings = monitorAreaMappingRepo.getAllMapped();
 
       // Build a set of manually mapped monitor IDs
@@ -736,8 +1221,9 @@ export function createServer(deps: ServerDependencies): Express {
           }
           areaGroups[key].monitors.push(monitor);
         } else {
-          // Fallback to auto-mapping
-          const primaryArea = getPrimaryAreaForMonitor(monitor.name);
+          // Fallback to auto-mapping or use areaCodigo from DB monitor
+          const monitorAreaCode = (monitor as any).areaCodigo;
+          const primaryArea = monitorAreaCode || getPrimaryAreaForMonitor(monitor.name);
           if (primaryArea) {
             // Try to find matching area codigo from area repository
             let areaCodigo = primaryArea;
@@ -1042,6 +1528,55 @@ export function createServer(deps: ServerDependencies): Express {
         }
         userRepository.delete(id);
         res.json({ success: true });
+      });
+
+      // POST /api/users/cleanup — Remove usuários com dados corrompidos/ilegíveis (admin only)
+      app.post('/api/users/cleanup', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (_req: Request, res: Response) => {
+        const allUsers = userRepository.getAll();
+        let removed = 0;
+
+        for (const user of allUsers) {
+          if (!isReadableText(user.nome) || !isReadableText(user.username) || !isReadableText(user.cargo || '') || !isReadableText(user.contato || '')) {
+            userRepository.delete(user.id);
+            removed++;
+          }
+        }
+
+        // Also clean corrupted areas
+        let areasRemoved = 0;
+        if (deps.areaRepository) {
+          const allAreas = deps.areaRepository.getAll();
+          for (const area of allAreas) {
+            if (!isReadableText(area.nome) || !isReadableText(area.codigo)) {
+              try {
+                deps.db.prepare('DELETE FROM areas WHERE id = ?').run(area.id);
+                areasRemoved++;
+              } catch { /* skip */ }
+            }
+          }
+        }
+
+        // Clean corrupted escalation schedules
+        let schedulesRemoved = 0;
+        if (deps.db) {
+          try {
+            const schedules = deps.db.prepare('SELECT id, area, colaborador FROM escalation_schedules').all() as any[];
+            for (const sched of schedules) {
+              if (!isReadableText(sched.area) || !isReadableText(sched.colaborador)) {
+                deps.db.prepare('DELETE FROM escalation_schedules WHERE id = ?').run(sched.id);
+                schedulesRemoved++;
+              }
+            }
+          } catch { /* table may not exist */ }
+        }
+
+        res.json({
+          success: true,
+          usersRemoved: removed,
+          areasRemoved,
+          schedulesRemoved,
+          message: `Limpeza concluída: ${removed} usuários, ${areasRemoved} áreas e ${schedulesRemoved} registros de escala corrompidos removidos.`,
+        });
       });
 
       // POST /api/users/:id/approve — Aprovar plantonista pendente (Responsável/Adm)

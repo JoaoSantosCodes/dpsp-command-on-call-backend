@@ -389,8 +389,8 @@ export function initializeDatabase(dbPath?: string): Database.Database {
   // Enable WAL mode for better concurrency
   db.pragma('journal_mode = WAL');
 
-  // Enable foreign keys
-  db.pragma('foreign_keys = ON');
+  // Disable foreign keys during initialization to avoid constraint issues during migrations
+  db.pragma('foreign_keys = OFF');
 
   // Create all tables
   createTables(db);
@@ -460,6 +460,9 @@ export function initializeDatabase(dbPath?: string): Database.Database {
 
   // Deduplicate areas (remove garbled CSV-imported duplicates)
   deduplicateAreas(db);
+
+  // Re-enable foreign keys after initialization
+  db.pragma('foreign_keys = ON');
 
   return db;
 }

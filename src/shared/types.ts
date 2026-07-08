@@ -258,6 +258,10 @@ export type AppView =
   | 'plantonist-management'
   | 'periodo-management'
   | 'escala-management'
+  | 'horario-management'
+  | 'problema-management'
+  | 'user-management'
+  | 'relatorio-contato'
   | 'calendar-view';
 
 // === Zustand Store Types ===

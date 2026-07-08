@@ -197,6 +197,49 @@ async function main(): Promise<void> {
     db,
   });
 
+  // 7.5 — Cleanup corrupted data on startup (one-time data hygiene)
+  try {
+    const { isReadableText } = require('./services/escalation-csv-processor');
+    let cleanedUsers = 0, cleanedAreas = 0, cleanedSchedules = 0;
+
+    db.pragma('foreign_keys = OFF');
+
+    // Clean corrupted users
+    const allUsers = userRepository.getAll();
+    for (const user of allUsers) {
+      if (!isReadableText(user.nome) || !isReadableText(user.username)) {
+        try { userRepository.delete(user.id); cleanedUsers++; } catch { /* skip */ }
+      }
+    }
+
+    // Clean corrupted areas
+    const allAreas = areaRepository.getAll();
+    for (const area of allAreas) {
+      if (!isReadableText(area.nome) || !isReadableText(area.codigo)) {
+        try { db.prepare('DELETE FROM areas WHERE id = ?').run(area.id); cleanedAreas++; } catch { /* skip */ }
+      }
+    }
+
+    // Clean corrupted escalation schedules
+    try {
+      const schedules = db.prepare('SELECT id, area, colaborador FROM escalation_schedules').all() as any[];
+      for (const sched of schedules) {
+        if (!isReadableText(sched.area) || !isReadableText(sched.colaborador)) {
+          db.prepare('DELETE FROM escalation_schedules WHERE id = ?').run(sched.id);
+          cleanedSchedules++;
+        }
+      }
+    } catch { /* table may not exist */ }
+
+    db.pragma('foreign_keys = ON');
+
+    if (cleanedUsers || cleanedAreas || cleanedSchedules) {
+      console.log(`[CommandCenter] Cleanup: removed ${cleanedUsers} corrupted users, ${cleanedAreas} areas, ${cleanedSchedules} schedules`);
+    }
+  } catch (e) {
+    console.log('[CommandCenter] Cleanup skipped:', (e as any).message);
+  }
+
   // 8. Create HTTP server and attach WebSocket
   const httpServer = http.createServer(app);
   wsServer.attach(httpServer);
