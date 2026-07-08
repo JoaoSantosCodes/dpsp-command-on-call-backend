@@ -1034,6 +1034,95 @@ export function createServer(deps: ServerDependencies): Express {
     res.json(areas);
   });
 
+  // GET /api/escalation/schedule — Retorna escala completa por área/mês (para view matricial)
+  app.get('/api/escalation/schedule', (req: Request, res: Response) => {
+    const area = req.query.area as string || '';
+    const month = parseInt(req.query.month as string) || new Date().getMonth() + 1;
+    const year = parseInt(req.query.year as string) || new Date().getFullYear();
+
+    if (!deps.db) { res.json([]); return; }
+
+    try {
+      let entries: any[] = [];
+      
+      // Match by area codigo or area name
+      const areaObj = deps.areaRepository?.getByCodigo(area);
+      const areaName = areaObj ? areaObj.nome : area;
+
+      // Try multiple variations of the area name
+      const variations = [area, areaName];
+      if (areaName) {
+        variations.push(areaName.replace(/ \/ /g, '/'));
+        variations.push(areaName.replace(/\//g, ' / '));
+      }
+
+      // 1. Try from escalation_schedules table
+      entries = deps.db.prepare(
+        `SELECT * FROM escalation_schedules WHERE area IN (${variations.map(() => '?').join(',')}) AND mes = ? AND ano = ?`
+      ).all(...variations, month, year) as any[];
+
+      // 2. Also fetch from formal tables (periodos + escalas + users) 
+      const datePrefix = `${year}-${String(month).padStart(2, '0')}`;
+      const formalEntries = deps.db.prepare(`
+        SELECT u.nome as colaborador, u.cargo, u.nivel_escalonamento as nivel, u.contato,
+               p.data, p.horarios, e.area_codigo
+        FROM escalas e
+        JOIN periodos p ON p.codigo = e.periodo_codigo
+        JOIN users u ON u.codigo = e.usuario_codigo
+        WHERE e.area_codigo = ? AND p.data LIKE ?
+      `).all(area, `${datePrefix}%`) as any[];
+
+      for (const fe of formalEntries) {
+        const dayNum = parseInt(fe.data.split('-')[2]);
+        // Check if not already in entries (avoid duplicates)
+        const exists = entries.some((x: any) => x.colaborador === fe.colaborador && x.dia === dayNum);
+        if (!exists) {
+          // Parse horarios to get inicio/fim
+          let horarioInicio = '', horarioFim = '', is24h = false;
+          if (fe.horarios === '24hs' || fe.horarios === '24h') {
+            horarioInicio = '00:00'; horarioFim = '23:59'; is24h = true;
+          } else if (fe.horarios && fe.horarios.includes('às')) {
+            const parts = fe.horarios.split('às').map((s: string) => s.trim());
+            horarioInicio = parts[0]; horarioFim = parts[1];
+          } else if (fe.horarios && fe.horarios.includes('-')) {
+            const parts = fe.horarios.split('-').map((s: string) => s.trim());
+            horarioInicio = parts[0]; horarioFim = parts[1];
+          }
+
+          entries.push({
+            area: fe.area_codigo,
+            colaborador: fe.colaborador,
+            cargo: fe.cargo || '',
+            nivel: fe.nivel || '1º Escalão',
+            contato: fe.contato || '',
+            dia: dayNum,
+            mes: month,
+            ano: year,
+            horario_inicio: horarioInicio,
+            horario_fim: horarioFim,
+            is_24h: is24h ? 1 : 0,
+          });
+        }
+      }
+
+      const result = entries.map((e: any) => ({
+        colaborador: e.colaborador,
+        cargo: e.cargo || '',
+        nivel: e.nivel || '1º Escalão',
+        contato: e.contato || '',
+        area: e.area,
+        dia: e.dia,
+        horarioInicio: e.horario_inicio,
+        horarioFim: e.horario_fim,
+        is24h: e.is_24h === 1,
+      }));
+
+      res.json(result);
+    } catch {
+      res.json([]);
+    }
+  });
+
   // GET /api/escalation/template — Download do template XLSX
   app.get('/api/escalation/template', (_req: Request, res: Response) => {
     const fs = require('fs');
