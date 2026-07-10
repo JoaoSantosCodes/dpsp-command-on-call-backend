@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@datadog/datadog-api-client": "^1.28.0",
+    "@types/pg": "^8.20.0",
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
@@ -24,6 +25,7 @@
     "multer": "^2.1.1",
     "node-cron": "^3.0.3",
     "papaparse": "^5.4.1",
+    "pg": "^8.22.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0",
     "xlsx": "0.18.5"
