@@ -117,6 +117,32 @@ async function main(): Promise<void> {
   const problemaRepository = new ProblemaRepository(db);
   const userPermissionRepository = new UserPermissionRepository(db);
 
+  // 2.5 Seed default admin if missing
+  try {
+    const adminExists = userRepository.getByUsername('admin');
+    if (!adminExists) {
+      console.log('[CommandCenter] No admin user found. Creating default admin...');
+      const bcrypt = require('bcrypt');
+      userRepository.create({
+        codigo: 'ADM-001',
+        areaCodigo: null,
+        areaSolicitada: null,
+        nome: 'Administrador do Sistema',
+        perfil: 'Adm',
+        nivelEscalonamento: null,
+        cargo: 'Administrador',
+        contato: null,
+        username: 'admin',
+        senhaHash: bcrypt.hashSync('admin123', 10),
+        ativo: true,
+        aprovado: true,
+      });
+      console.log('[CommandCenter] Default admin created: admin / admin123');
+    }
+  } catch (e) {
+    console.error('[CommandCenter] Failed to create default admin:', e);
+  }
+
   // 3. Create service instances
   const scheduleManager = new ScheduleManager(scheduleRepository, escalationChainRepository);
   const monitorMappingService = new MonitorMappingService(monitorMappingRepository);
