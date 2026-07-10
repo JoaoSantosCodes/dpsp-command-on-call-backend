@@ -67,13 +67,28 @@ export function createServer(deps: ServerDependencies): Express {
 
   // CORS — permite origens configuradas
   const allowedOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(',')
+    ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
     : ['http://localhost:5173', 'http://localhost:3000'];
 
   app.use(cors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Permitir requisições sem origin (como ferramentas locais/Postman)
+      if (!origin) return callback(null, true);
+      
+      // Permitir automaticamente qualquer URL da Vercel (incluindo previews)
+      if (origin.endsWith('.vercel.app')) {
+        return callback(null, true);
+      }
+      
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        return callback(null, true);
+      }
+      
+      console.warn(`[CORS] Origem bloqueada: ${origin}`);
+      return callback(new Error('Bloqueado pela política de CORS'));
+    },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Selected-Area'],
   }));
 
