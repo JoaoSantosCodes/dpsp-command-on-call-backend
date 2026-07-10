@@ -1055,11 +1055,13 @@ export function createServer(deps: ServerDependencies): Express {
       if (areaName) {
         variations.push(areaName.replace(/ \/ /g, '/'));
         variations.push(areaName.replace(/\//g, ' / '));
+        variations.push(areaName.replace(/\//g, ' ')); // Excel can't have / in sheet name
+        variations.push(areaName.replace(/\//g, '-')); // Excel can't have / in sheet name
       }
 
       // 1. Try from escalation_schedules table
       entries = deps.db.prepare(
-        `SELECT * FROM escalation_schedules WHERE area IN (${variations.map(() => '?').join(',')}) AND mes = ? AND ano = ?`
+        `SELECT * FROM escalation_schedules WHERE area COLLATE NOCASE IN (${variations.map(() => '?').join(',')}) AND mes = ? AND ano = ?`
       ).all(...variations, month, year) as any[];
 
       // 2. Also fetch from formal tables (periodos + escalas + users) 
@@ -1070,7 +1072,7 @@ export function createServer(deps: ServerDependencies): Express {
         FROM escalas e
         JOIN periodos p ON p.codigo = e.periodo_codigo
         JOIN users u ON u.codigo = e.usuario_codigo
-        WHERE e.area_codigo = ? AND p.data LIKE ?
+        WHERE e.area_codigo COLLATE NOCASE = ? AND p.data LIKE ?
       `).all(area, `${datePrefix}%`) as any[];
 
       for (const fe of formalEntries) {
