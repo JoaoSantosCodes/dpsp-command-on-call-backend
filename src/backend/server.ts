@@ -773,7 +773,8 @@ export function createServer(deps: ServerDependencies): Express {
           csvContent = allResults[0].csv;
         }
       } catch (err) {
-        res.status(400).json({ error: 'Erro ao processar arquivo Excel. Verifique o formato.' });
+        console.error('[Import] Erro ao processar Excel:', err);
+        res.status(400).json({ error: 'Erro ao processar arquivo Excel. Verifique o formato.', details: err instanceof Error ? err.message : String(err) });
         return;
       }
     } else {
