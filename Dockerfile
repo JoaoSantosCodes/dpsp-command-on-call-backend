@@ -7,6 +7,8 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
+RUN apk add --no-cache python3 make g++
+
 # Copia dependências e instala
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -23,6 +25,8 @@ RUN npx tsc -p tsconfig.json
 # ==========================================
 FROM node:20-alpine
 WORKDIR /app
+
+RUN apk add --no-cache python3 make g++
 
 # Copia dependências e instala apenas as de produção
 COPY package.json package-lock.json ./
