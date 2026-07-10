@@ -441,7 +441,10 @@ export function createServer(deps: ServerDependencies): Express {
         
         // Process all sheets — each sheet may represent a different area
         const allResults: { csv: string; sheetName: string }[] = [];
+        const skipSheets = ['instruções', 'instrucoes', 'instructions', 'template vazio', 'readme'];
         for (const sheetName of workbook.SheetNames) {
+          // Skip instruction/template sheets
+          if (skipSheets.some(s => sheetName.toLowerCase().includes(s))) continue;
           const sheet = workbook.Sheets[sheetName];
           const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
           allResults.push({ csv, sheetName });
@@ -781,11 +784,14 @@ export function createServer(deps: ServerDependencies): Express {
       const now = new Date();
       const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
       const brasiliaDate = new Date(brasiliaStr);
-      const currentMonth = brasiliaDate.getMonth() + 1;
-      const currentYear = brasiliaDate.getFullYear();
+      // Use month/year from parsed file if available, otherwise current
+      const importMonth = (result as any).importMonth || brasiliaDate.getMonth() + 1;
+      const importYear = (result as any).importYear || brasiliaDate.getFullYear();
 
-      // Clear existing entries for this month/year
-      deps.db.prepare('DELETE FROM escalation_schedules WHERE mes = ? AND ano = ?').run(currentMonth, currentYear);
+      // Clear existing entries for this month/year (per area to avoid wiping other areas)
+      for (const area of result.areas) {
+        deps.db.prepare('DELETE FROM escalation_schedules WHERE area = ? AND mes = ? AND ano = ?').run(area.area, importMonth, importYear);
+      }
 
       // Insert all new entries
       const insert = deps.db.prepare(
@@ -801,8 +807,8 @@ export function createServer(deps: ServerDependencies): Express {
             entry.nivel,
             entry.contato,
             entry.dia,
-            currentMonth,
-            currentYear,
+            importMonth,
+            importYear,
             entry.horarioInicio,
             entry.horarioFim,
             entry.is24h ? 1 : 0

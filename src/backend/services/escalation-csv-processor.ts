@@ -23,6 +23,159 @@ function isReadableText(text: string): boolean {
 export { isReadableText };
 
 /**
+ * Parse the new structured matrix format:
+ * Line 1: Area name
+ * Line 2: Month/Year (e.g., "Julho/2026")
+ * Line 3: Empty
+ * Line 4: Headers (Colaborador | Cargo | Contato | Nível | 01 | 02 | ... | 31)
+ * Lines 5+: Data rows
+ */
+export function parseStructuredMatrixCSV(csvContent: string, sheetName?: string): EscalationCSVResult | null {
+  const lines = csvContent.split(/\r?\n/);
+  if (lines.length < 5) return null;
+
+  const row0 = parseCSVRow(lines[0]);
+  const row1 = parseCSVRow(lines[1]);
+
+  // Detect: Line 1 = area name (non-empty, single value), Line 2 = month/year
+  const areaName = (row0[0] || '').trim();
+  const monthYearRaw = (row1[0] || '').trim();
+  
+  if (!areaName || areaName.length < 3) return null;
+  if (!isReadableText(areaName)) return null;
+
+  // Parse month/year from line 2 (formats: "Julho/2026", "07/2026", "Agosto 2026")
+  let importMonth = 0, importYear = 0;
+  const monthNames: Record<string, number> = {
+    'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3, 'abril': 4,
+    'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8, 'setembro': 9,
+    'outubro': 10, 'novembro': 11, 'dezembro': 12,
+  };
+  
+  const monthMatch = monthYearRaw.toLowerCase().match(/(\w+)\s*[\/\-]?\s*(\d{4})/);
+  if (monthMatch) {
+    const monthStr = monthMatch[1];
+    importYear = parseInt(monthMatch[2]);
+    importMonth = monthNames[monthStr] || parseInt(monthStr) || 0;
+  }
+  
+  if (!importMonth || !importYear) {
+    // Fallback: use current month
+    const now = new Date();
+    const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+    const brasiliaDate = new Date(brasiliaStr);
+    importMonth = brasiliaDate.getMonth() + 1;
+    importYear = brasiliaDate.getFullYear();
+  }
+
+  // Find header row (should be line 3 or 4, contains "Colaborador" or day numbers)
+  let headerRowIdx = -1;
+  let colabCol = 0, cargoCol = 1, contatoCol = 2, nivelCol = 3, dayStartCol = 4;
+
+  for (let i = 2; i < Math.min(6, lines.length); i++) {
+    const row = parseCSVRow(lines[i]);
+    const rowLower = row.map(c => c.trim().toLowerCase());
+    if (rowLower.includes('colaborador') || rowLower.includes('nome') || rowLower.includes('plantonista')) {
+      headerRowIdx = i;
+      for (let j = 0; j < row.length; j++) {
+        const cell = rowLower[j];
+        if (cell === 'colaborador' || cell === 'nome' || cell === 'plantonista') colabCol = j;
+        if (cell === 'cargo' || cell === 'função') cargoCol = j;
+        if (cell === 'contato' || cell === 'telefone' || cell === 'celular') contatoCol = j;
+        if (cell === 'nível' || cell === 'nivel' || cell === 'escalão' || cell === 'escalao') nivelCol = j;
+      }
+      // Find where day columns start (first column with "01" or "1")
+      for (let j = 0; j < row.length; j++) {
+        const cell = row[j].trim();
+        if (/^0?1$/.test(cell)) { dayStartCol = j; break; }
+      }
+      break;
+    }
+  }
+
+  if (headerRowIdx === -1) return null;
+
+  // Parse data rows
+  const entries: EscalationEntry[] = [];
+  const areas: ParsedEscalation[] = [];
+  const finalAreaName = sheetName || areaName;
+  const currentArea: ParsedEscalation = { area: finalAreaName, colaboradores: [] };
+  areas.push(currentArea);
+
+  for (let i = headerRowIdx + 1; i < lines.length; i++) {
+    const row = parseCSVRow(lines[i]);
+    const nome = (row[colabCol] || '').trim();
+    if (!nome || !isReadableText(nome)) continue;
+    if (nome.toLowerCase() === 'colaborador' || nome.toLowerCase() === 'nome') continue;
+
+    const cargo = (row[cargoCol] || '').trim();
+    const contato = (row[contatoCol] || '').trim();
+    const nivel = (row[nivelCol] || '').trim() || '1º Escalão';
+
+    const escalas: Array<{ dia: number; horarioInicio: string; horarioFim: string; is24h: boolean }> = [];
+
+    for (let dayIdx = 0; dayIdx < 31; dayIdx++) {
+      const colIdx = dayStartCol + dayIdx;
+      if (colIdx >= row.length) break;
+      const cellValue = (row[colIdx] || '').trim();
+      if (!cellValue || cellValue === '—' || cellValue === '-') continue;
+
+      let parsed = parseTimeRangeSimple(cellValue);
+      if (!parsed && /^[xXsS✓✔]$/.test(cellValue)) {
+        parsed = { inicio: '00:00', fim: '23:59', is24h: true };
+      }
+
+      if (parsed) {
+        const dia = dayIdx + 1;
+        escalas.push({ dia, horarioInicio: parsed.inicio, horarioFim: parsed.fim, is24h: parsed.is24h });
+        entries.push({
+          area: finalAreaName,
+          colaborador: nome,
+          cargo,
+          nivel,
+          contato,
+          dia,
+          horarioInicio: parsed.inicio,
+          horarioFim: parsed.fim,
+          is24h: parsed.is24h,
+        });
+      }
+    }
+
+    currentArea.colaboradores.push({ nome, cargo, nivel, contato, escalas });
+  }
+
+  if (entries.length === 0 && currentArea.colaboradores.length === 0) return null;
+
+  return { areas, entries, errors: [], importMonth, importYear };
+}
+
+/**
+ * Simple time range parser for the matrix format.
+ * Handles: "18:00-06:00", "18:00 às 06:00", "24hs", "24h", "08:00-08:00"
+ */
+function parseTimeRangeSimple(raw: string): { inicio: string; fim: string; is24h: boolean } | null {
+  const cleaned = raw.trim();
+  if (!cleaned) return null;
+
+  // 24h formats
+  if (/^24h(s|rs)?$/i.test(cleaned)) {
+    return { inicio: '00:00', fim: '23:59', is24h: true };
+  }
+
+  // "HH:MM-HH:MM" or "HH:MM às HH:MM" or "HH:MM - HH:MM"
+  const match = cleaned.match(/(\d{1,2}:\d{2})\s*[-–àáãa]s?\s*(\d{1,2}:\d{2})/i);
+  if (match) {
+    const inicio = match[1].padStart(5, '0');
+    const fim = match[2].padStart(5, '0');
+    const is24h = (inicio === fim) || (inicio === '08:00' && fim === '08:00');
+    return { inicio, fim, is24h };
+  }
+
+  return null;
+}
+
+/**
  * Processor for the escalation CSV format.
  * 
  * Format:
@@ -80,6 +233,8 @@ export interface EscalationCSVResult {
   areas: ParsedEscalation[];
   entries: EscalationEntry[];
   errors: string[];
+  importMonth?: number;
+  importYear?: number;
 }
 
 /**
@@ -466,7 +621,13 @@ export function parseEscalationCSV(csvContent: string, sheetName?: string): Esca
   // Split into lines and parse CSV (handling quoted fields)
   const lines = csvContent.split(/\r?\n/);
 
-  // Try tabular format first (Time Cloud format: Nome | Dia | Data início | Início | Data fim | Fim)
+  // Try structured matrix format first (new template: Area name on line 1, Month/Year on line 2)
+  const structuredResult = parseStructuredMatrixCSV(csvContent, sheetName);
+  if (structuredResult && (structuredResult.entries.length > 0 || structuredResult.areas[0]?.colaboradores.length > 0)) {
+    return structuredResult;
+  }
+
+  // Try tabular format (Time Cloud format: Nome | Dia | Data início | Início | Data fim | Fim)
   const tabularResult = parseTabularFormat(lines);
   if (tabularResult && tabularResult.entries.length > 0) {
     // Use sheet name as area name if provided
