@@ -793,6 +793,7 @@ export function parseEscalationCSV(csvContent: string, sheetName?: string): Esca
  * Parse a CSV row handling quoted fields properly.
  */
 function parseCSVRow(line: string): string[] {
+  const delimiter = (line.match(/;/g) || []).length > (line.match(/,/g) || []).length ? ';' : ',';
   const result: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -801,7 +802,7 @@ function parseCSVRow(line: string): string[] {
     if (ch === '"') {
       if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
       else { inQuotes = !inQuotes; }
-    } else if (ch === ',' && !inQuotes) {
+    } else if (ch === delimiter && !inQuotes) {
       result.push(current);
       current = '';
     } else {
