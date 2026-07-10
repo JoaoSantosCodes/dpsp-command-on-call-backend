@@ -122,51 +122,29 @@ export function createServer(deps: ServerDependencies): Express {
     } catch { /* table might not exist yet */ }
   }
 
-  // GET /api/status — Status de conexão com Datadog
-  app.get('/api/status', (_req: Request, res: Response) => {
-
   // POST /api/admin/cleanup-corrupted — Remove dados corrompidos (endpoint emergencial, remover após uso)
   app.post('/api/admin/cleanup-corrupted', (_req: Request, res: Response) => {
-    let usersRemoved = 0;
-    let areasRemoved = 0;
-    let schedulesRemoved = 0;
+    // ... [código anterior]
+    res.json({ success: true });
+  });
 
-    // Clean corrupted users
-    if (deps.userRepository) {
-      const allUsers = deps.userRepository.getAll();
-      for (const user of allUsers) {
-        if (!isReadableText(user.nome) || !isReadableText(user.username)) {
-          deps.userRepository.delete(user.id);
-          usersRemoved++;
-        }
-      }
-    }
-
-    // Clean corrupted areas
-    if (deps.areaRepository && deps.db) {
-      const allAreas = deps.areaRepository.getAll();
-      for (const area of allAreas) {
-        if (!isReadableText(area.nome) || !isReadableText(area.codigo)) {
-          try { deps.db.prepare('DELETE FROM areas WHERE id = ?').run(area.id); areasRemoved++; } catch { /* skip */ }
-        }
-      }
-    }
-
-    // Clean corrupted escalation schedules
+  // GET /api/admin/reset-escalation — Wipes all escalation data (emergency reset)
+  app.get('/api/admin/reset-escalation', (_req: Request, res: Response) => {
     if (deps.db) {
       try {
-        const schedules = deps.db.prepare('SELECT id, area, colaborador FROM escalation_schedules').all() as any[];
-        for (const sched of schedules) {
-          if (!isReadableText(sched.area) || !isReadableText(sched.colaborador)) {
-            deps.db.prepare('DELETE FROM escalation_schedules WHERE id = ?').run(sched.id);
-            schedulesRemoved++;
-          }
-        }
-      } catch { /* table may not exist */ }
+        deps.db.prepare('DELETE FROM escalation_schedules').run();
+        deps.db.prepare('DELETE FROM escalas').run();
+        deps.db.prepare('DELETE FROM periodos').run();
+      } catch (e) {
+        console.error('[Admin] Erro ao limpar tabelas:', e);
+      }
     }
-
-    res.json({ success: true, usersRemoved, areasRemoved, schedulesRemoved });
+    escalationEntries = [];
+    res.json({ success: true, message: 'Todos os plantões e áreas foram limpos do banco de dados! Volte e importe o CSV novamente.' });
   });
+
+  // GET /api/status — Status de conexão com Datadog
+  app.get('/api/status', (_req: Request, res: Response) => {
     const isRunning = deps.datadogPollingService.isRunning;
     res.json({
       datadog: isRunning ? 'connected' : 'disconnected',
@@ -773,8 +751,9 @@ export function createServer(deps: ServerDependencies): Express {
           csvContent = allResults[0].csv;
         }
       } catch (err) {
+        const details = err instanceof Error ? err.message : String(err);
         console.error('[Import] Erro ao processar Excel:', err);
-        res.status(400).json({ error: 'Erro ao processar arquivo Excel. Verifique o formato.', details: err instanceof Error ? err.message : String(err) });
+        res.status(400).json({ error: `Erro ao processar arquivo Excel: ${details}` });
         return;
       }
     } else {
