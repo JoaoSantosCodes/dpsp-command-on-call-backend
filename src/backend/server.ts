@@ -143,6 +143,45 @@ export function createServer(deps: ServerDependencies): Express {
     res.json({ success: true, message: 'Todos os plantões e áreas foram limpos do banco de dados! Volte e importe o CSV novamente.' });
   });
 
+  // GET /api/admin/seed-leaders — Auto-populate coordinators and managers
+  app.get('/api/admin/seed-leaders', (_req: Request, res: Response) => {
+    if (deps.areaRepository) {
+      const updates = [
+        { regex: /Lojas/i, coord: 'Yuri Marques', coordContato: '(19) 96444-428', ger: 'William Mendonça', gerContato: '(11) 94554-4585' },
+        { regex: /Digitais/i, coord: 'Moyses Santos', coordContato: '(11) 94535-4913', ger: null, gerContato: null },
+        { regex: /Log[ií]stica/i, coord: 'Alessandro Lucas Soares', coordContato: '(11) 97208-7822', ger: 'Fabricio Spano', gerContato: '(11) 97208-7822' },
+        { regex: /Comercial|Marketing/i, coord: 'Priscila Lira Alves', coordContato: '(11) 97355-7180', ger: null, gerContato: null },
+        { regex: /Corporativa/i, coord: 'Marcelo Almeida / Thiago Moreira', coordContato: '(11) 94546-0472', ger: 'William Mendonça', gerContato: '(11) 94554-4585' },
+        { regex: /Sa[úu]de/i, coord: 'Victor Hideo Nagatani', coordContato: '(11) 91033-0161', ger: null, gerContato: null },
+        { regex: /Integra[çc][õo]es|CPI|ODI/i, coord: 'Tarciso Franzote Perozini', coordContato: '', ger: null, gerContato: null },
+        { regex: /Infraestrutura|Data Center/i, coord: 'Andrie Ferreira Bittencourt', coordContato: '(11) 96392-0260', ger: 'Alex Almeida', gerContato: '(11) 99693-6308' },
+        { regex: /Redes/i, coord: 'Mauricio Santos Pomponet', coordContato: '(11) 94195-7625', ger: 'Marcos Marra Boldori', gerContato: '(11) 93259-6134' },
+        { regex: /DevOps|Cloud|TIME CLOUD/i, coord: 'Jair Meira Nascimento', coordContato: '(11) 99741-1892', ger: 'Alex Almeida', gerContato: '(11) 99693-6308' },
+        { regex: /Command Center/i, coord: 'Diego Carmo', coordContato: '(11) 94333-4500', ger: 'Alexandre Carvalho de Lima', gerContato: '(11) 98965-2816' },
+      ];
+
+      const areas = deps.areaRepository.getAll();
+      let updatedCount = 0;
+      for (const area of areas) {
+        for (const u of updates) {
+          if (u.regex.test(area.nome) || u.regex.test(area.codigo)) {
+            deps.areaRepository.update(area.id, {
+              coordenadorNome: u.coord || area.coordenadorNome,
+              coordenadorContato: u.coordContato || area.coordenadorContato,
+              gerenteNome: u.ger || area.gerenteNome,
+              gerenteContato: u.gerContato || area.gerenteContato,
+            });
+            updatedCount++;
+            break;
+          }
+        }
+      }
+      res.json({ success: true, message: `Líderes atualizados em ${updatedCount} áreas com sucesso! Atualize a página.` });
+    } else {
+      res.status(500).json({ error: 'Area repository not available' });
+    }
+  });
+
   // GET /api/status — Status de conexão com Datadog
   app.get('/api/status', (_req: Request, res: Response) => {
     const isRunning = deps.datadogPollingService.isRunning;
