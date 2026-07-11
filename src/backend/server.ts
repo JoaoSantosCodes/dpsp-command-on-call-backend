@@ -1025,9 +1025,17 @@ export function createServer(deps: ServerDependencies): Express {
       const areaNorm = normalizeForComparison(area);
       
       if (onCall.length > 0) {
-        // Tem plantonista hoje — mostra quem está escalado
+        const matchedArea = deps.areaRepository?.getAll().find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
         return {
           area,
+          coordenador: {
+            nome: matchedArea?.coordenadorNome || '',
+            contato: matchedArea?.coordenadorContato || ''
+          },
+          gerente: {
+            nome: matchedArea?.gerenteNome || '',
+            contato: matchedArea?.gerenteContato || ''
+          },
           temPlantonista: true,
           plantonistas: onCall.map(e => ({
             nome: e.colaborador,
@@ -1058,8 +1066,17 @@ export function createServer(deps: ServerDependencies): Express {
             return acc;
           }, [] as any[]);
 
+        const matchedArea = deps.areaRepository?.getAll().find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
         return {
           area,
+          coordenador: {
+            nome: matchedArea?.coordenadorNome || '',
+            contato: matchedArea?.coordenadorContato || ''
+          },
+          gerente: {
+            nome: matchedArea?.gerenteNome || '',
+            contato: matchedArea?.gerenteContato || ''
+          },
           temPlantonista: false,
           plantonistas: allTeamMembers,
         };
