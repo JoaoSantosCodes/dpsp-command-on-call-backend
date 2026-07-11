@@ -331,16 +331,16 @@ function parseTabularFormat(lines: string[]): EscalationCSVResult | null {
     const rowLower = row.map(c => c.trim().toLowerCase());
 
     // Look for header with "nome" and ("data início" or "data inicio" or "início" or "inicio") and "fim"
-    const hasNome = rowLower.some(c => c === 'nome');
+    const hasNome = rowLower.some(c => c === 'nome' || c === 'plantonista' || c === 'colaborador' || c === 'responsável');
     const hasInicio = rowLower.some(c => c === 'início' || c === 'inicio' || c === 'data início' || c === 'data inicio');
-    const hasFim = rowLower.some(c => c === 'fim' || c === 'data fim');
+    const hasFim = rowLower.some(c => c === 'fim' || c === 'data fim' || c === 'término');
 
     if (hasNome && hasInicio && hasFim) {
       headerRow = i;
       for (let j = 0; j < row.length; j++) {
         const cell = rowLower[j];
-        if (cell === 'nome') nomeCol = j;
-        if (cell === 'dia') diaCol = j;
+        if (cell === 'nome' || cell === 'plantonista' || cell === 'colaborador' || cell === 'responsável') nomeCol = j;
+        if (cell === 'dia' || cell === 'dia da semana') diaCol = j;
         if (cell === 'data início' || cell === 'data inicio') dataInicioCol = j;
         if (cell === 'início' || cell === 'inicio') {
           // Distinguish "Início" (time) from "Data início" (date)
@@ -357,8 +357,8 @@ function parseTabularFormat(lines: string[]): EscalationCSVResult | null {
             }
           }
         }
-        if (cell === 'data fim') dataFimCol = j;
-        if (cell === 'fim') {
+        if (cell === 'data fim' || cell === 'término') dataFimCol = j;
+        if (cell === 'fim' || cell === 'término') {
           if (dataFimCol !== j && dataFimCol !== -1) {
             fimCol = j;
           } else if (dataFimCol === -1) {
@@ -385,12 +385,12 @@ function parseTabularFormat(lines: string[]): EscalationCSVResult | null {
   nomeCol = -1; diaCol = -1; dataInicioCol = -1; inicioCol = -1; dataFimCol = -1; fimCol = -1;
   for (let j = 0; j < headerLower.length; j++) {
     const cell = headerLower[j];
-    if (cell === 'nome' && nomeCol === -1) nomeCol = j;
-    else if ((cell === 'dia') && diaCol === -1) diaCol = j;
+    if ((cell === 'nome' || cell === 'plantonista' || cell === 'colaborador' || cell === 'responsável') && nomeCol === -1) nomeCol = j;
+    else if ((cell === 'dia' || cell === 'dia da semana') && diaCol === -1) diaCol = j;
     else if ((cell === 'data início' || cell === 'data inicio') && dataInicioCol === -1) dataInicioCol = j;
     else if ((cell === 'início' || cell === 'inicio') && inicioCol === -1) inicioCol = j;
-    else if (cell === 'data fim' && dataFimCol === -1) dataFimCol = j;
-    else if (cell === 'fim' && fimCol === -1) fimCol = j;
+    else if ((cell === 'data fim' || cell === 'término') && dataFimCol === -1) dataFimCol = j;
+    else if ((cell === 'fim' || cell === 'término') && fimCol === -1) fimCol = j;
   }
 
   // If no separate "inicio" time col, maybe the time is embedded in "Data início" or use the column after dataInicioCol
