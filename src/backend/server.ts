@@ -143,6 +143,36 @@ export function createServer(deps: ServerDependencies): Express {
     res.json({ success: true, message: 'Todos os plantões e áreas foram limpos do banco de dados! Volte e importe o CSV novamente.' });
   });
 
+  // GET /api/admin/seed-admin - Recreate default admin user
+  app.get('/api/admin/seed-admin', async (_req: Request, res: Response) => {
+    try {
+      const existing = deps.userRepository?.getByUsername('admin');
+      if (existing) {
+        res.json({ success: true, message: 'Usuário admin já existe. Tente logar com ele.' });
+        return;
+      }
+      const result = await authService.register({
+        codigo: 'ADM-001',
+        areaCodigo: null,
+        nome: 'Administrador',
+        perfil: 'Adm',
+        cargo: 'Administrador do Sistema',
+        contato: '',
+        username: 'admin',
+        senha: '123'
+      });
+      if (result.success) {
+        // Aprove immediately
+        if (result.user) deps.userRepository?.update(result.user.id, { aprovado: true });
+        res.json({ success: true, message: 'Usuário admin recriado com sucesso! Login: admin | Senha: 123' });
+      } else {
+        res.status(500).json({ error: result.error });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/admin/seed-leaders — Auto-populate coordinators and managers
   app.get('/api/admin/seed-leaders', (_req: Request, res: Response) => {
     if (deps.areaRepository) {
