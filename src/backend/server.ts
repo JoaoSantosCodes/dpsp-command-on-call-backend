@@ -151,7 +151,11 @@ export function createServer(deps: ServerDependencies): Express {
         res.json({ success: true, message: 'Usuário admin já existe. Tente logar com ele.' });
         return;
       }
-      const result = await authService.register({
+      if (!deps.authService) {
+        res.status(500).json({ error: 'AuthService não disponível' });
+        return;
+      }
+      const result = await deps.authService.register({
         codigo: 'ADM-001',
         areaCodigo: null,
         nome: 'Administrador',
