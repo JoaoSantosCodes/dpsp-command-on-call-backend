@@ -540,18 +540,18 @@ export function createServer(deps: ServerDependencies): Express {
               const currentMonth = brasiliaDate.getMonth() + 1;
               const currentYear = brasiliaDate.getFullYear();
 
-              deps.db.prepare('DELETE FROM escalation_schedules WHERE mes = ? AND ano = ?').run(currentMonth, currentYear);
-
-              const insert = deps.db.prepare(
-                'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-              );
-
-              const insertAll = deps.db.transaction(() => {
+              await deps.db.query('BEGIN');
+              try {
+                await deps.db.query('DELETE FROM escalation_schedules WHERE mes = $1 AND ano = $2', [currentMonth, currentYear]);
+                const insertSql = 'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)';
                 for (const entry of resultData.entries) {
-                  insert.run(entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0);
+                  await deps.db.query(insertSql, [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]);
                 }
-              });
-              insertAll();
+                await deps.db.query('COMMIT');
+              } catch (e) {
+                await deps.db.query('ROLLBACK');
+                console.error('Import transaction error', e);
+              }
             }
 
             // Auto-create areas/users (same logic as below)
@@ -690,18 +690,18 @@ export function createServer(deps: ServerDependencies): Express {
               const currentMonth = brasiliaDate.getMonth() + 1;
               const currentYear = brasiliaDate.getFullYear();
 
-              deps.db.prepare('DELETE FROM escalation_schedules WHERE mes = ? AND ano = ?').run(currentMonth, currentYear);
-
-              const insert = deps.db.prepare(
-                'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-              );
-
-              const insertAll = deps.db.transaction(() => {
+              await deps.db.query('BEGIN');
+              try {
+                await deps.db.query('DELETE FROM escalation_schedules WHERE mes = $1 AND ano = $2', [currentMonth, currentYear]);
+                const insertSql = 'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)';
                 for (const entry of combinedResult.entries) {
-                  insert.run(entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0);
+                  await deps.db.query(insertSql, [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]);
                 }
-              });
-              insertAll();
+                await deps.db.query('COMMIT');
+              } catch (e) {
+                await deps.db.query('ROLLBACK');
+                console.error('Import transaction error', e);
+              }
             }
 
             // Auto-create areas/users
@@ -855,34 +855,25 @@ export function createServer(deps: ServerDependencies): Express {
       const importMonth = (result as any).importMonth || brasiliaDate.getMonth() + 1;
       const importYear = (result as any).importYear || brasiliaDate.getFullYear();
 
-      // Clear existing entries for this month/year (per area to avoid wiping other areas)
-      for (const area of result.areas) {
-        deps.db.prepare('DELETE FROM escalation_schedules WHERE area = ? AND mes = ? AND ano = ?').run(area.area, importMonth, importYear);
-      }
+      await deps.db.query('BEGIN');
+      try {
+        // Clear existing entries for this month/year (per area to avoid wiping other areas)
+        for (const area of result.areas) {
+          await deps.db.query('DELETE FROM escalation_schedules WHERE area = $1 AND mes = $2 AND ano = $3', [area.area, importMonth, importYear]);
+        }
 
-      // Insert all new entries
-      const insert = deps.db.prepare(
-        'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      );
-
-      const insertAll = deps.db.transaction(() => {
+        const insertSql = 'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)';
         for (const entry of result.entries) {
-          insert.run(
-            entry.area,
-            entry.colaborador,
-            entry.cargo,
-            entry.nivel,
-            entry.contato,
-            entry.dia,
-            importMonth,
-            importYear,
-            entry.horarioInicio,
-            entry.horarioFim,
-            entry.is24h ? 1 : 0
+          await deps.db.query(
+            insertSql,
+            [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, importMonth, importYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]
           );
         }
-      });
-      insertAll();
+        await deps.db.query('COMMIT');
+      } catch (e) {
+        await deps.db.query('ROLLBACK');
+        console.error('Import transaction error', e);
+      }
     }
 
     // Auto-create or update areas and users from CSV data (merge/de-para)
@@ -1152,20 +1143,23 @@ export function createServer(deps: ServerDependencies): Express {
       }
 
       // 1. Try from escalation_schedules table
-      entries = deps.db.prepare(
-        `SELECT * FROM escalation_schedules WHERE area COLLATE NOCASE IN (${variations.map(() => '?').join(',')}) AND mes = ? AND ano = ?`
-      ).all(...variations, month, year) as any[];
+      const resQuery1 = await deps.db.query(
+        `SELECT * FROM escalation_schedules WHERE area ILIKE ANY($1) AND mes = $2 AND ano = $3`,
+        [variations, month, year]
+      );
+      entries = resQuery1.rows as any[];
 
       // 2. Also fetch from formal tables (periodos + escalas + users) 
       const datePrefix = `${year}-${String(month).padStart(2, '0')}`;
-      const formalEntries = deps.db.prepare(`
+      const resQuery2 = await deps.db.query(`
         SELECT u.nome as colaborador, u.cargo, u.nivel_escalonamento as nivel, u.contato,
                p.data, p.horarios, e.area_codigo
         FROM escalas e
         JOIN periodos p ON p.codigo = e.periodo_codigo
         JOIN users u ON u.codigo = e.usuario_codigo
-        WHERE e.area_codigo COLLATE NOCASE = ? AND p.data LIKE ?
-      `).all(area, `${datePrefix}%`) as any[];
+        WHERE e.area_codigo ILIKE $1 AND p.data LIKE $2
+      `, [area, `${datePrefix}%`]);
+      const formalEntries = resQuery2.rows as any[];
 
       for (const fe of formalEntries) {
         const dayNum = parseInt(fe.data.split('-')[2]);
@@ -1363,7 +1357,7 @@ export function createServer(deps: ServerDependencies): Express {
       // Fallback: if no monitors from Datadog, load from DB
       if ((!monitors || monitors.length === 0) && deps.db) {
         try {
-          const dbMonitors = deps.db.prepare('SELECT id, name, state, tags, priority, area_codigo FROM monitors').all() as any[];
+          const dbMonitors = (await deps.db.query('SELECT id, name, state, tags, priority, area_codigo FROM monitors')).rows as any[];
           if (dbMonitors.length > 0) {
             monitors = dbMonitors.map((m: any) => ({
               id: m.id,
@@ -2341,17 +2335,18 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/contato-log — Listar logs de contato (para relatório)
-  app.get('/api/contato-log', (req: Request, res: Response) => {
+  app.get('/api/contato-log', async (req: Request, res: Response) => {
     if (!deps.db) { res.json([]); return; }
     const dataFilter = req.query.data as string | undefined;
     const areaFilter = req.query.areaCodigo as string | undefined;
     try {
       let sql = 'SELECT * FROM contato_log WHERE 1=1';
       const params: any[] = [];
-      if (dataFilter) { sql += ' AND data = ?'; params.push(dataFilter); }
-      if (areaFilter) { sql += ' AND area_codigo = ?'; params.push(areaFilter); }
+      let idx = 1;
+      if (dataFilter) { sql += ` AND data = $${idx++}`; params.push(dataFilter); }
+      if (areaFilter) { sql += ` AND area_codigo = $${idx++}`; params.push(areaFilter); }
       sql += ' ORDER BY data DESC, hora DESC LIMIT 500';
-      const rows = deps.db.prepare(sql).all(...params);
+      const rows = (await deps.db.query(sql, params)).rows;
       res.json(rows);
     } catch { res.json([]); }
   });
