@@ -1,53 +1,51 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { MonitorAreaMapping } from '../../../shared/types';
 
 export class MonitorAreaMappingRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  getByMonitorId(monitorId: number): MonitorAreaMapping | undefined {
-    const stmt = this.db.prepare(
-      'SELECT monitor_id, area_codigo, monitor_name, created_at, updated_at FROM monitor_area_mapping WHERE monitor_id = ?'
+  async getByMonitorId(monitorId: number): Promise<MonitorAreaMapping | undefined> {
+    const res = await this.db.query(
+      'SELECT monitor_id, area_codigo, monitor_name, created_at, updated_at FROM monitor_area_mapping WHERE monitor_id = $1',
+      [monitorId]
     );
-    const row = stmt.get(monitorId) as any;
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  setMapping(monitorId: number, areaCodigo: string, monitorName: string): void {
-    const stmt = this.db.prepare(`
+  async setMapping(monitorId: number, areaCodigo: string, monitorName: string): Promise<void> {
+    await this.db.query(`
       INSERT INTO monitor_area_mapping (monitor_id, area_codigo, monitor_name, created_at, updated_at)
-      VALUES (?, ?, ?, datetime('now'), datetime('now'))
+      VALUES ($1, $2, $3, NOW(), NOW())
       ON CONFLICT(monitor_id) DO UPDATE SET
         area_codigo = excluded.area_codigo,
         monitor_name = excluded.monitor_name,
-        updated_at = datetime('now')
-    `);
-    stmt.run(monitorId, areaCodigo, monitorName);
+        updated_at = NOW()
+    `, [monitorId, areaCodigo, monitorName]);
   }
 
-  getByArea(areaCodigo: string): MonitorAreaMapping[] {
-    const stmt = this.db.prepare(
-      'SELECT monitor_id, area_codigo, monitor_name, created_at, updated_at FROM monitor_area_mapping WHERE area_codigo = ?'
+  async getByArea(areaCodigo: string): Promise<MonitorAreaMapping[]> {
+    const res = await this.db.query(
+      'SELECT monitor_id, area_codigo, monitor_name, created_at, updated_at FROM monitor_area_mapping WHERE area_codigo = $1',
+      [areaCodigo]
     );
-    const rows = stmt.all(areaCodigo) as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  getAllMapped(): MonitorAreaMapping[] {
-    const stmt = this.db.prepare(
+  async getAllMapped(): Promise<MonitorAreaMapping[]> {
+    const res = await this.db.query(
       'SELECT monitor_id, area_codigo, monitor_name, created_at, updated_at FROM monitor_area_mapping'
     );
-    const rows = stmt.all() as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  deleteMapping(monitorId: number): void {
-    const stmt = this.db.prepare('DELETE FROM monitor_area_mapping WHERE monitor_id = ?');
-    stmt.run(monitorId);
+  async deleteMapping(monitorId: number): Promise<void> {
+    await this.db.query('DELETE FROM monitor_area_mapping WHERE monitor_id = $1', [monitorId]);
   }
 
   private mapRow(row: any): MonitorAreaMapping {

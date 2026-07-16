@@ -8,22 +8,22 @@ export class MonitorMappingService {
     this.repository = repository;
   }
 
-  getTeamForMonitor(monitorId: number): string | null {
-    const mapping = this.repository.getByMonitorId(monitorId);
+  async getTeamForMonitor(monitorId: number): Promise<string | null> {
+    const mapping = await this.repository.getByMonitorId(monitorId);
     return mapping ? mapping.teamId : null;
   }
 
-  setMonitorTeamMapping(monitorId: number, teamId: string, monitorName: string): void {
-    this.repository.setMapping(monitorId, teamId, monitorName);
+  async setMonitorTeamMapping(monitorId: number, teamId: string, monitorName: string): Promise<void> {
+    await this.repository.setMapping(monitorId, teamId, monitorName);
   }
 
-  getUnmappedMonitors(allMonitors: Monitor[]): Monitor[] {
-    const allMapped = this.repository.getAllMapped();
+  async getUnmappedMonitors(allMonitors: Monitor[]): Promise<Monitor[]> {
+    const allMapped = await this.repository.getAllMapped();
     const mappedIds = new Set(allMapped.map((m) => m.monitorId));
     return allMonitors.filter((monitor) => !mappedIds.has(monitor.id));
   }
 
-  getMappingsForTeam(teamId: string): MonitorMapping[] {
+  async getMappingsForTeam(teamId: string): Promise<MonitorMapping[]> {
     return this.repository.getByTeamId(teamId);
   }
 }

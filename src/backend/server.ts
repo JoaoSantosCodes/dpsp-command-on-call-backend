@@ -105,9 +105,8 @@ export function createServer(deps: ServerDependencies): Express {
 
   // Load escalation data from database on startup
   if (deps.db) {
-    try {
-      const rows = deps.db.prepare('SELECT * FROM escalation_schedules').all() as any[];
-      escalationEntries = rows.map((r: any) => ({
+    deps.db.query('SELECT * FROM escalation_schedules').then((res: any) => {
+      escalationEntries = res.rows.map((r: any) => ({
         area: r.area,
         colaborador: r.colaborador,
         cargo: r.cargo || '',
@@ -119,7 +118,7 @@ export function createServer(deps: ServerDependencies): Express {
         is24h: r.is_24h === 1,
       }));
       console.log(`[CommandCenter] Loaded ${escalationEntries.length} escalation entries from database`);
-    } catch { /* table might not exist yet */ }
+    }).catch(() => { /* table might not exist yet */ });
   }
 
   // POST /api/admin/cleanup-corrupted — Remove dados corrompidos (endpoint emergencial, remover após uso)
@@ -129,12 +128,12 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/admin/reset-escalation — Wipes all escalation data (emergency reset)
-  app.get('/api/admin/reset-escalation', (_req: Request, res: Response) => {
+  app.get('/api/admin/reset-escalation', async (_req: Request, res: Response) => {
     if (deps.db) {
       try {
-        deps.db.prepare('DELETE FROM escalation_schedules').run();
-        deps.db.prepare('DELETE FROM escalas').run();
-        deps.db.prepare('DELETE FROM periodos').run();
+        await deps.db.query('DELETE FROM escalation_schedules');
+        await deps.db.query('DELETE FROM escalas');
+        await deps.db.query('DELETE FROM periodos');
       } catch (e) {
         console.error('[Admin] Erro ao limpar tabelas:', e);
       }
@@ -146,7 +145,7 @@ export function createServer(deps: ServerDependencies): Express {
   // GET /api/admin/seed-admin - Recreate default admin user
   app.get('/api/admin/seed-admin', async (_req: Request, res: Response) => {
     try {
-      const existing = deps.userRepository?.getByUsername('admin');
+      const existing = await deps.userRepository?.getByUsername('admin');
       if (existing) {
         res.json({ success: true, message: 'Usuário admin já existe. Tente logar com ele.' });
         return;
@@ -167,7 +166,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
       if (result.success) {
         // Aprove immediately
-        if (result.user) deps.userRepository?.update(result.user.id, { aprovado: true });
+        if (result.user) await deps.userRepository?.update(result.user.id, { aprovado: true });
         res.json({ success: true, message: 'Usuário admin recriado com sucesso! Login: admin | Senha: 123' });
       } else {
         res.status(500).json({ error: result.error });
@@ -178,7 +177,7 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/admin/seed-leaders — Auto-populate coordinators and managers
-  app.get('/api/admin/seed-leaders', (_req: Request, res: Response) => {
+  app.get('/api/admin/seed-leaders', async (_req: Request, res: Response) => {
     if (deps.areaRepository) {
       const updates = [
         { regex: /Lojas/i, coord: 'Yuri Marques', coordContato: '(19) 96444-428', ger: 'William Mendonça', gerContato: '(11) 94554-4585' },
@@ -194,12 +193,12 @@ export function createServer(deps: ServerDependencies): Express {
         { regex: /Command Center/i, coord: 'Diego Carmo', coordContato: '(11) 94333-4500', ger: 'Alexandre Carvalho de Lima', gerContato: '(11) 98965-2816' },
       ];
 
-      const areas = deps.areaRepository.getAll();
+      const areas = await deps.areaRepository.getAll();
       let updatedCount = 0;
       for (const area of areas) {
         for (const u of updates) {
           if (u.regex.test(area.nome) || u.regex.test(area.codigo)) {
-            deps.areaRepository.update(area.id, {
+            await deps.areaRepository.update(area.id, {
               coordenadorNome: u.coord || area.coordenadorNome,
               coordenadorContato: u.coordContato || area.coordenadorContato,
               gerenteNome: u.ger || area.gerenteNome,
@@ -226,13 +225,13 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/monitors — Listar monitores com estado
-  app.get('/api/monitors', (_req: Request, res: Response) => {
+  app.get('/api/monitors', async (_req: Request, res: Response) => {
     let monitors = deps.datadogPollingService.getMonitors();
     
     // Fallback: if no monitors from Datadog polling, load from DB (mock/seeded data)
     if ((!monitors || monitors.length === 0) && deps.db) {
       try {
-        const dbMonitors = deps.db.prepare('SELECT id, name, state, tags, priority, area_codigo FROM monitors').all() as any[];
+        const dbMonitors = (await deps.db.query('SELECT id, name, state, tags, priority, area_codigo FROM monitors')).rows as any[];
         if (dbMonitors.length > 0) {
           monitors = dbMonitors.map((m: any) => ({
             id: m.id,
@@ -343,18 +342,18 @@ export function createServer(deps: ServerDependencies): Express {
 
   // GET /api/areas/public — Listar áreas sem autenticação (para tela de registro)
   if (deps.areaRepository) {
-    app.get('/api/areas/public', (_req: Request, res: Response) => {
-      const areas = deps.areaRepository!.getAll();
+    app.get('/api/areas/public', async (_req: Request, res: Response) => {
+      const areas = await deps.areaRepository!.getAll();
       res.json(areas);
     });
   }
 
   // GET /api/teams — Listar times com plantonista atual
-  app.get('/api/teams', (_req: Request, res: Response) => {
-    const teams = deps.teamRepository.getAll();
-    const result = teams.map((team) => {
-      const currentOnCall = deps.scheduleManager.getCurrentOnCall(team.id);
-      const escalationChain = deps.scheduleManager.getEscalationChain(team.id);
+  app.get('/api/teams', async (_req: Request, res: Response) => {
+    const teams = await deps.teamRepository.getAll();
+    const result = await Promise.all(teams.map(async (team) => {
+      const currentOnCall = await deps.scheduleManager.getCurrentOnCall(team.id);
+      const escalationChain = await deps.scheduleManager.getEscalationChain(team.id);
       return {
         teamId: team.id,
         teamName: team.name,
@@ -362,66 +361,66 @@ export function createServer(deps: ServerDependencies): Express {
         currentOnCall,
         escalationChainConfigured: escalationChain.length > 0,
       };
-    });
+    }));
     res.json(result);
   });
 
   // POST /api/teams — Criar novo time
-  app.post('/api/teams', (req: Request, res: Response) => {
+  app.post('/api/teams', async (req: Request, res: Response) => {
     const { id, name, displayOrder } = req.body || {};
     if (!id || !name) {
       res.status(400).json({ error: 'id e name são obrigatórios' });
       return;
     }
-    if (deps.teamRepository.exists(id)) {
+    if (await deps.teamRepository.exists(id)) {
       res.status(400).json({ error: 'Time com este ID já existe' });
       return;
     }
-    const team = deps.teamRepository.create({ id, name, displayOrder: displayOrder || 99 });
+    const team = await deps.teamRepository.create({ id, name, displayOrder: displayOrder || 99 });
     res.status(201).json(team);
   });
 
   // PUT /api/teams/:id — Atualizar time
-  app.put('/api/teams/:id', (req: Request, res: Response) => {
+  app.put('/api/teams/:id', async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const team = deps.teamRepository.getById(id);
+    const team = await deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
       return;
     }
     const { name, displayOrder } = req.body || {};
-    const updated = deps.teamRepository.update(id, { name, displayOrder });
+    const updated = await deps.teamRepository.update(id, { name, displayOrder });
     res.json(updated);
   });
 
   // DELETE /api/teams/:id — Deletar time
-  app.delete('/api/teams/:id', (req: Request, res: Response) => {
+  app.delete('/api/teams/:id', async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const team = deps.teamRepository.getById(id);
+    const team = await deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
       return;
     }
-    deps.teamRepository.delete(id);
+    await deps.teamRepository.delete(id);
     res.json({ success: true });
   });
 
   // GET /api/teams/:id/escalation-chain — Cadeia de escalação
-  app.get('/api/teams/:id/escalation-chain', (req: Request, res: Response) => {
+  app.get('/api/teams/:id/escalation-chain', async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const team = deps.teamRepository.getById(id);
+    const team = await deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
       return;
     }
-    const chain = deps.scheduleManager.getEscalationChain(id);
+    const chain = await deps.scheduleManager.getEscalationChain(id);
     res.json(chain);
   });
 
   // PUT /api/teams/:id/escalation-chain — Atualizar cadeia de escalação
-  app.put('/api/teams/:id/escalation-chain', (req: Request, res: Response) => {
+  app.put('/api/teams/:id/escalation-chain', async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const team = deps.teamRepository.getById(id);
+    const team = await deps.teamRepository.getById(id);
     if (!team) {
       res.status(404).json({ error: 'Time não encontrado' });
       return;
@@ -441,7 +440,7 @@ export function createServer(deps: ServerDependencies): Express {
       // The areaCodigo can be passed as a query param or derived from the request
       const areaCodigo = req.query.areaCodigo as string | undefined;
       if (areaCodigo) {
-        const allUsers = deps.userRepository.getAll();
+        const allUsers = await deps.userRepository.getAll();
         const responsavel = allUsers.find(u => u.perfil === 'Responsavel' && u.areaCodigo === areaCodigo);
         if (responsavel) {
           // Remove any existing position 2 entry
@@ -462,12 +461,12 @@ export function createServer(deps: ServerDependencies): Express {
       }
     }
 
-    deps.scheduleManager.updateEscalationChain(id, finalChain);
+    await deps.scheduleManager.updateEscalationChain(id, finalChain);
     res.json({ success: true });
   });
 
   // POST /api/schedules/import — Importar CSV (multipart/form-data)
-  app.post('/api/schedules/import', upload.single('file'), (req: Request, res: Response) => {
+  app.post('/api/schedules/import', upload.single('file'), async (req: Request, res: Response) => {
     if (!req.file) {
       res.status(400).json({ error: 'Nenhum arquivo enviado' });
       return;
@@ -484,7 +483,7 @@ export function createServer(deps: ServerDependencies): Express {
       return;
     }
 
-    const importResult = deps.csvProcessor.importSchedule(validationResult.validEntries);
+    const importResult = await deps.csvProcessor.importSchedule(validationResult.validEntries);
     res.json(importResult);
   });
 
@@ -566,7 +565,7 @@ export function createServer(deps: ServerDependencies): Express {
               const bcrypt = require('bcrypt');
 
               for (const parsedArea of resultData.areas) {
-                const allAreas = areaRepo.getAll();
+                const allAreas = await areaRepo.getAll();
                 const normalizedIncoming = normalizeForComparison(parsedArea.area);
                 const matchingArea = allAreas.find(
                   (a) => normalizeForComparison(a.nome) === normalizedIncoming || normalizeForComparison(a.codigo) === normalizedIncoming
@@ -578,7 +577,7 @@ export function createServer(deps: ServerDependencies): Express {
                 } else {
                   areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
                   try {
-                    areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
                     areasCreated++;
                   } catch { /* skip */ }
                 }
@@ -589,20 +588,20 @@ export function createServer(deps: ServerDependencies): Express {
                     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
                     .replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/^\.|\.$/, '').substring(0, 30);
 
-                  const existing = userRepo.getByUsername(username);
+                  const existing = await userRepo.getByUsername(username);
                   if (existing) {
                     const updates: any = {};
                     if (areaCodigo && existing.areaCodigo !== areaCodigo) updates.areaCodigo = areaCodigo;
                     if (colab.cargo && existing.cargo !== colab.cargo) updates.cargo = colab.cargo;
                     if (colab.contato && existing.contato !== colab.contato) updates.contato = colab.contato;
                     if (Object.keys(updates).length > 0) {
-                      try { userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
+                      try { await userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
                     }
                   } else {
                     const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
                     const senhaHash = bcrypt.hashSync('plantonista123', 10);
                     try {
-                      userRepo.create({ codigo, areaCodigo, areaSolicitada: null, nome: colab.nome, perfil: 'Plantonista', nivelEscalonamento: null, cargo: colab.cargo || null, contato: colab.contato || null, username, senhaHash, ativo: true, aprovado: true });
+                      await userRepo.create({ codigo, areaCodigo, areaSolicitada: null, nome: colab.nome, perfil: 'Plantonista', nivelEscalonamento: null, cargo: colab.cargo || null, contato: colab.contato || null, username, senhaHash, ativo: true, aprovado: true });
                       usersCreated++;
                     } catch { /* skip */ }
                   }
@@ -627,7 +626,7 @@ export function createServer(deps: ServerDependencies): Express {
               const importYear = brasiliaDate2.getFullYear();
 
               for (const entry of resultData.entries) {
-                const allAreas = areaRepo.getAll();
+                const allAreas = await areaRepo.getAll();
                 const areaNorm = normalizeForComparison(entry.area);
                 const matchedArea = allAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
                 if (!matchedArea) continue;
@@ -636,24 +635,24 @@ export function createServer(deps: ServerDependencies): Express {
                 const dateStr = `${importYear}-${String(importMonth).padStart(2, '0')}-${String(entry.dia).padStart(2, '0')}`;
                 const horarios = entry.is24h ? '24hs' : `${entry.horarioInicio} às ${entry.horarioFim}`;
 
-                const existingPeriodos = periodoRepo.getByArea(areaCodigo);
+                const existingPeriodos = await periodoRepo.getByArea(areaCodigo);
                 let periodo = existingPeriodos.find((p: any) => p.data === dateStr && p.horarios === horarios);
                 if (!periodo) {
                   const periodoCodigo = `PER-${areaCodigo.substring(0, 10)}-${dateStr}-${Math.random().toString(36).substring(2, 5)}`;
-                  try { periodo = periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo }); periodosCreated++; } catch { continue; }
+                  try { periodo = await periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo }); periodosCreated++; } catch { continue; }
                 }
 
                 const userNorm = normalizeForComparison(entry.colaborador);
-                const allUsers = userRepo.getAll();
+                const allUsers = await userRepo.getAll();
                 const matchedUser = allUsers.find((u: any) => normalizeForComparison(u.nome) === userNorm && u.areaCodigo === areaCodigo);
                 if (!matchedUser) continue;
 
-                const existingEscalas = escalaRepo.getByArea(areaCodigo);
+                const existingEscalas = await escalaRepo.getByArea(areaCodigo);
                 const alreadyExists = existingEscalas.some((e: any) => e.periodoCodigo === periodo.codigo && e.usuarioCodigo === matchedUser.codigo);
                 if (alreadyExists) continue;
 
                 const escalaCodigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-                try { escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo }); escalasCreated++; } catch { /* skip */ }
+                try { await escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo }); escalasCreated++; } catch { /* skip */ }
               }
             }
 
@@ -716,7 +715,7 @@ export function createServer(deps: ServerDependencies): Express {
               const bcrypt = require('bcrypt');
 
               for (const parsedArea of combinedResult.areas) {
-                const allAreas = areaRepo.getAll();
+                const allAreas = await areaRepo.getAll();
                 const normalizedIncoming = normalizeForComparison(parsedArea.area);
                 const matchingArea = allAreas.find(
                   (a) => normalizeForComparison(a.nome) === normalizedIncoming || normalizeForComparison(a.codigo) === normalizedIncoming
@@ -728,7 +727,7 @@ export function createServer(deps: ServerDependencies): Express {
                 } else {
                   areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
                   try {
-                    areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
                     areasCreated++;
                   } catch { /* skip */ }
                 }
@@ -739,20 +738,20 @@ export function createServer(deps: ServerDependencies): Express {
                     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
                     .replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/^\.|\.$/, '').substring(0, 30);
 
-                  const existing = userRepo.getByUsername(username);
+                  const existing = await userRepo.getByUsername(username);
                   if (existing) {
                     const updates: any = {};
                     if (areaCodigo && existing.areaCodigo !== areaCodigo) updates.areaCodigo = areaCodigo;
                     if (colab.cargo && existing.cargo !== colab.cargo) updates.cargo = colab.cargo;
                     if (colab.contato && existing.contato !== colab.contato) updates.contato = colab.contato;
                     if (Object.keys(updates).length > 0) {
-                      try { userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
+                      try { await userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
                     }
                   } else {
                     const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
                     const senhaHash = bcrypt.hashSync('plantonista123', 10);
                     try {
-                      userRepo.create({ codigo, areaCodigo, areaSolicitada: null, nome: colab.nome, perfil: 'Plantonista', nivelEscalonamento: null, cargo: colab.cargo || null, contato: colab.contato || null, username, senhaHash, ativo: true, aprovado: true });
+                      await userRepo.create({ codigo, areaCodigo, areaSolicitada: null, nome: colab.nome, perfil: 'Plantonista', nivelEscalonamento: null, cargo: colab.cargo || null, contato: colab.contato || null, username, senhaHash, ativo: true, aprovado: true });
                       usersCreated++;
                     } catch { /* skip */ }
                   }
@@ -777,7 +776,7 @@ export function createServer(deps: ServerDependencies): Express {
               const importYear = brasiliaDate2.getFullYear();
 
               for (const entry of combinedResult.entries) {
-                const allAreas = areaRepo.getAll();
+                const allAreas = await areaRepo.getAll();
                 const areaNorm = normalizeForComparison(entry.area);
                 const matchedArea = allAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
                 if (!matchedArea) continue;
@@ -786,24 +785,24 @@ export function createServer(deps: ServerDependencies): Express {
                 const dateStr = `${importYear}-${String(importMonth).padStart(2, '0')}-${String(entry.dia).padStart(2, '0')}`;
                 const horarios = entry.is24h ? '24hs' : `${entry.horarioInicio} às ${entry.horarioFim}`;
 
-                const existingPeriodos = periodoRepo.getByArea(areaCodigo);
+                const existingPeriodos = await periodoRepo.getByArea(areaCodigo);
                 let periodo = existingPeriodos.find((p: any) => p.data === dateStr && p.horarios === horarios);
                 if (!periodo) {
                   const periodoCodigo = `PER-${areaCodigo.substring(0, 10)}-${dateStr}-${Math.random().toString(36).substring(2, 5)}`;
-                  try { periodo = periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo }); periodosCreated++; } catch { continue; }
+                  try { periodo = await periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo }); periodosCreated++; } catch { continue; }
                 }
 
                 const userNorm = normalizeForComparison(entry.colaborador);
-                const allUsers = userRepo.getAll();
+                const allUsers = await userRepo.getAll();
                 const matchedUser = allUsers.find((u: any) => normalizeForComparison(u.nome) === userNorm && u.areaCodigo === areaCodigo);
                 if (!matchedUser) continue;
 
-                const existingEscalas = escalaRepo.getByArea(areaCodigo);
+                const existingEscalas = await escalaRepo.getByArea(areaCodigo);
                 const alreadyExists = existingEscalas.some((e: any) => e.periodoCodigo === periodo.codigo && e.usuarioCodigo === matchedUser.codigo);
                 if (alreadyExists) continue;
 
                 const escalaCodigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-                try { escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo }); escalasCreated++; } catch { /* skip */ }
+                try { await escalaRepo.create({ codigo: escalaCodigo, areaCodigo, periodoCodigo: periodo.codigo, usuarioCodigo: matchedUser.codigo }); escalasCreated++; } catch { /* skip */ }
               }
             }
 
@@ -898,7 +897,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       for (const parsedArea of result.areas) {
         // Use normalized comparison to find existing areas
-        const allAreas = areaRepo.getAll();
+        const allAreas = await areaRepo.getAll();
         const normalizedIncoming = normalizeForComparison(parsedArea.area);
         const matchingArea = allAreas.find(
           (a) => normalizeForComparison(a.nome) === normalizedIncoming || normalizeForComparison(a.codigo) === normalizedIncoming
@@ -910,7 +909,7 @@ export function createServer(deps: ServerDependencies): Express {
         } else {
           areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
           try {
-            areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+            await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
             areasCreated++;
           } catch { /* skip */ }
         }
@@ -924,7 +923,7 @@ export function createServer(deps: ServerDependencies): Express {
             .replace(/\.+/g, '.').replace(/^\.|\.$/, '')
             .substring(0, 30);
 
-          const existing = userRepo.getByUsername(username);
+          const existing = await userRepo.getByUsername(username);
           if (existing) {
             // MERGE: Update area, cargo, contato if changed
             const updates: any = {};
@@ -932,13 +931,13 @@ export function createServer(deps: ServerDependencies): Express {
             if (colab.cargo && existing.cargo !== colab.cargo) updates.cargo = colab.cargo;
             if (colab.contato && existing.contato !== colab.contato) updates.contato = colab.contato;
             if (Object.keys(updates).length > 0) {
-              try { userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
+              try { await userRepo.update(existing.id, updates); usersUpdated++; } catch { /* skip */ }
             }
           } else {
             const codigo = `ESC-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
             const senhaHash = bcrypt.hashSync('plantonista123', 10);
             try {
-              userRepo.create({
+              await userRepo.create({
                 codigo,
                 areaCodigo,
                 areaSolicitada: null,
@@ -977,7 +976,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       for (const entry of result.entries) {
         // Find area codigo
-        const allAreas = areaRepo.getAll();
+        const allAreas = await areaRepo.getAll();
         const areaNorm = normalizeForComparison(entry.area);
         const matchedArea = allAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
         if (!matchedArea) continue;
@@ -987,24 +986,24 @@ export function createServer(deps: ServerDependencies): Express {
         const horarios = entry.is24h ? '24hs' : `${entry.horarioInicio} às ${entry.horarioFim}`;
 
         // Find or create periodo
-        const existingPeriodos = periodoRepo.getByArea(areaCodigo);
+        const existingPeriodos = await periodoRepo.getByArea(areaCodigo);
         let periodo = existingPeriodos.find((p: any) => p.data === dateStr && p.horarios === horarios);
         if (!periodo) {
           const periodoCodigo = `PER-${areaCodigo.substring(0, 10)}-${dateStr}-${Math.random().toString(36).substring(2, 5)}`;
           try {
-            periodo = periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo });
+            periodo = await periodoRepo.create({ codigo: periodoCodigo, data: dateStr, horarios, areaCodigo });
             periodosCreated++;
           } catch { continue; }
         }
 
         // Find user by name
         const userNorm = normalizeForComparison(entry.colaborador);
-        const allUsers = userRepo.getAll();
+        const allUsers = await userRepo.getAll();
         const matchedUser = allUsers.find((u: any) => normalizeForComparison(u.nome) === userNorm && u.areaCodigo === areaCodigo);
         if (!matchedUser) continue;
 
         // Check if escala already exists for this combo
-        const existingEscalas = escalaRepo.getByArea(areaCodigo);
+        const existingEscalas = await escalaRepo.getByArea(areaCodigo);
         const alreadyExists = existingEscalas.some((e: any) => e.periodoCodigo === periodo.codigo && e.usuarioCodigo === matchedUser.codigo);
         if (alreadyExists) continue;
 
@@ -1030,7 +1029,7 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/escalation/on-call — Quem está de plantão hoje (por área)
-  app.get('/api/escalation/on-call', (_req: Request, res: Response) => {
+  app.get('/api/escalation/on-call', async (_req: Request, res: Response) => {
     // Use only areas from the escalation CSV data (avoids duplicates with DB)
     // Deduplicate by normalized name
     const seenNormalized = new Set<string>();
@@ -1046,7 +1045,7 @@ export function createServer(deps: ServerDependencies): Express {
 
     if (entryAreas.length === 0) {
       if (deps.areaRepository) {
-        const dbAreas = deps.areaRepository.getAll();
+        const dbAreas = await deps.areaRepository.getAll();
         res.json(dbAreas.map(a => ({ area: a.nome, plantonistas: [] })));
         return;
       }
@@ -1054,12 +1053,15 @@ export function createServer(deps: ServerDependencies): Express {
       return;
     }
 
+    // Pre-fetch areas once for use in the map
+    const allDbAreas = deps.areaRepository ? await deps.areaRepository.getAll() : [];
+
     const result = entryAreas.map(area => {
       const onCall = getCurrentOnCallForArea(escalationEntries, area);
       const areaNorm = normalizeForComparison(area);
       
       if (onCall.length > 0) {
-        const matchedArea = deps.areaRepository?.getAll().find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
+        const matchedArea = allDbAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
         return {
           area,
           coordenador: {
@@ -1100,7 +1102,7 @@ export function createServer(deps: ServerDependencies): Express {
             return acc;
           }, [] as any[]);
 
-        const matchedArea = deps.areaRepository?.getAll().find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
+        const matchedArea = allDbAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === areaNorm);
         return {
           area,
           coordenador: {
@@ -1126,7 +1128,7 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/escalation/schedule — Retorna escala completa por área/mês (para view matricial)
-  app.get('/api/escalation/schedule', (req: Request, res: Response) => {
+  app.get('/api/escalation/schedule', async (req: Request, res: Response) => {
     const area = req.query.area as string || '';
     const month = parseInt(req.query.month as string) || new Date().getMonth() + 1;
     const year = parseInt(req.query.year as string) || new Date().getFullYear();
@@ -1137,7 +1139,7 @@ export function createServer(deps: ServerDependencies): Express {
       let entries: any[] = [];
       
       // Match by area codigo or area name
-      const areaObj = deps.areaRepository?.getByCodigo(area);
+      const areaObj = await deps.areaRepository?.getByCodigo(area);
       const areaName = areaObj ? areaObj.nome : area;
 
       // Try multiple variations of the area name
@@ -1273,14 +1275,14 @@ export function createServer(deps: ServerDependencies): Express {
   });
 
   // GET /api/monitor-mappings — Listar mapeamentos
-  app.get('/api/monitor-mappings', (_req: Request, res: Response) => {
+  app.get('/api/monitor-mappings', async (_req: Request, res: Response) => {
     const monitors = deps.datadogPollingService.getMonitors();
-    const unmapped = deps.monitorMappingService.getUnmappedMonitors(monitors);
-    const teams = deps.teamRepository.getAll();
+    const unmapped = await deps.monitorMappingService.getUnmappedMonitors(monitors);
+    const teams = await deps.teamRepository.getAll();
 
     const mappingsByTeam: Record<string, any[]> = {};
     for (const team of teams) {
-      mappingsByTeam[team.id] = deps.monitorMappingService.getMappingsForTeam(team.id);
+      mappingsByTeam[team.id] = await deps.monitorMappingService.getMappingsForTeam(team.id);
     }
 
     res.json({
@@ -1322,8 +1324,7 @@ export function createServer(deps: ServerDependencies): Express {
   if (deps.monitorAreaMappingRepository) {
     const monitorAreaMappingRepo = deps.monitorAreaMappingRepository;
 
-    // PUT /api/monitor-area-mappings/:monitorId — Assign monitor to area
-    app.put('/api/monitor-area-mappings/:monitorId', writeBlockMiddleware, (req: Request, res: Response) => {
+    app.put('/api/monitors/:monitorId/map-area', async (req: Request, res: Response) => {
       const monitorId = parseInt(req.params.monitorId as string, 10);
       if (isNaN(monitorId)) {
         res.status(400).json({ error: 'monitorId deve ser um número válido' });
@@ -1338,25 +1339,25 @@ export function createServer(deps: ServerDependencies): Express {
 
       // Validate that the area exists
       if (deps.areaRepository) {
-        const area = deps.areaRepository.getByCodigo(areaCodigo);
+        const area = await deps.areaRepository.getByCodigo(areaCodigo);
         if (!area) {
           res.status(400).json({ error: 'Área não encontrada' });
           return;
         }
       }
 
-      monitorAreaMappingRepo.setMapping(monitorId, areaCodigo, monitorName || `Monitor ${monitorId}`);
+      await monitorAreaMappingRepo.setMapping(monitorId, areaCodigo, monitorName || `Monitor ${monitorId}`);
       res.json({ success: true, monitorId, areaCodigo });
     });
 
     // GET /api/monitor-area-mappings — Get all monitor-area mappings
-    app.get('/api/monitor-area-mappings', (_req: Request, res: Response) => {
-      const mappings = monitorAreaMappingRepo.getAllMapped();
+    app.get('/api/monitor-area-mappings', async (_req: Request, res: Response) => {
+      const mappings = await monitorAreaMappingRepo.getAllMapped();
       res.json(mappings);
     });
 
     // GET /api/dashboard/monitors-by-area — Monitors grouped by area with on-call/fallback status
-    app.get('/api/dashboard/monitors-by-area', (req: Request, res: Response) => {
+    app.get('/api/dashboard/monitors-by-area', async (req: Request, res: Response) => {
       let monitors = deps.datadogPollingService.getMonitors();
       
       // Fallback: if no monitors from Datadog, load from DB
@@ -1378,7 +1379,7 @@ export function createServer(deps: ServerDependencies): Express {
         } catch { /* table may not exist */ }
       }
       
-      const manualMappings = monitorAreaMappingRepo.getAllMapped();
+      const manualMappings = await monitorAreaMappingRepo.getAllMapped();
 
       // Build a set of manually mapped monitor IDs
       const manualMappedIds = new Set(manualMappings.map(m => m.monitorId));
@@ -1396,7 +1397,7 @@ export function createServer(deps: ServerDependencies): Express {
             // Get area name from repository if available
             let areaNome = manualMapping.areaCodigo;
             if (deps.areaRepository) {
-              const area = deps.areaRepository.getByCodigo(manualMapping.areaCodigo);
+              const area = await deps.areaRepository.getByCodigo(manualMapping.areaCodigo);
               if (area) areaNome = area.nome;
             }
             areaGroups[key] = { areaCodigo: key, areaNome, monitors: [] };
@@ -1411,7 +1412,7 @@ export function createServer(deps: ServerDependencies): Express {
             let areaCodigo = primaryArea;
             let areaNome = primaryArea;
             if (deps.areaRepository) {
-              const allAreas = deps.areaRepository.getAll();
+              const allAreas = await deps.areaRepository.getAll();
               const matchedArea = allAreas.find(a =>
                 normalizeForComparison(a.nome) === normalizeForComparison(primaryArea)
               );
@@ -1437,13 +1438,13 @@ export function createServer(deps: ServerDependencies): Express {
       const brasiliaDate = new Date(brasiliaStr);
       const todayStr = `${brasiliaDate.getFullYear()}-${String(brasiliaDate.getMonth() + 1).padStart(2, '0')}-${String(brasiliaDate.getDate()).padStart(2, '0')}`;
 
-      const groupsWithOnCall = Object.values(areaGroups).map(group => {
+      const groupsWithOnCall = await Promise.all(Object.values(areaGroups).map(async group => {
         // Determine if there is a plantonista scheduled today for this area
         let scheduledPlantonista: { nome: string; usuarioCodigo: string } | null = null;
 
         if (deps.escalaRepository && deps.periodoRepository && deps.userRepository) {
-          const escalas = deps.escalaRepository.getByArea(group.areaCodigo);
-          const periodos = deps.periodoRepository.getByArea(group.areaCodigo);
+          const escalas = await deps.escalaRepository.getByArea(group.areaCodigo);
+          const periodos = await deps.periodoRepository.getByArea(group.areaCodigo);
 
           // Find periodos matching today
           const todayPeriodos = periodos.filter(p => p.data === todayStr);
@@ -1451,7 +1452,7 @@ export function createServer(deps: ServerDependencies): Express {
             const periodoCodigos = new Set(todayPeriodos.map(p => p.codigo));
             const todayEscala = escalas.find(e => periodoCodigos.has(e.periodoCodigo));
             if (todayEscala) {
-              const allUsers = deps.userRepository.getAll();
+              const allUsers = await deps.userRepository.getAll();
               const user = allUsers.find(u => u.codigo === todayEscala.usuarioCodigo);
               scheduledPlantonista = {
                 nome: user ? user.nome : todayEscala.usuarioCodigo,
@@ -1475,7 +1476,7 @@ export function createServer(deps: ServerDependencies): Express {
 
         // No plantonista scheduled today — resolve fallback (Requirements 5.1, 5.2)
         if (deps.userRepository && deps.areaRepository) {
-          const fallback = resolveAreaFallback(group.areaCodigo, deps.userRepository, deps.areaRepository);
+          const fallback = await resolveAreaFallback(group.areaCodigo, deps.userRepository, deps.areaRepository);
           return {
             ...group,
             onCallStatus: {
@@ -1498,7 +1499,7 @@ export function createServer(deps: ServerDependencies): Express {
             fallback: null,
           },
         };
-      });
+      }));
 
       res.json({ groups: groupsWithOnCall, unassigned });
     });
@@ -1565,12 +1566,12 @@ export function createServer(deps: ServerDependencies): Express {
       : areaFilterMiddleware;
 
     // GET /api/auth/me — Retornar dados do usuário logado
-    app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
+    app.get('/api/auth/me', authMiddleware, async (req: Request, res: Response) => {
       if (!deps.userRepository) {
         res.status(500).json({ error: 'User repository not available' });
         return;
       }
-      const user = deps.userRepository.getById(req.user!.userId);
+      const user = await deps.userRepository.getById(req.user!.userId);
       if (!user) {
         res.status(404).json({ error: 'Usuário não encontrado' });
         return;
@@ -1639,8 +1640,8 @@ export function createServer(deps: ServerDependencies): Express {
       // GET /api/users — Listar usuários (admin and responsavel)
       // Suporta ?search= para filtrar por nome ou perfil (case-insensitive)
       // Retorna { users, total } onde total é o número de usuários após filtro
-      app.get('/api/users', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), dbAreaFilterMiddleware, (req: Request, res: Response) => {
-        let users = userRepository.getAll();
+      app.get('/api/users', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), dbAreaFilterMiddleware, async (req: Request, res: Response) => {
+        let users = await userRepository.getAll();
         // Use effective areas for filtering
         const effectiveAreas = getEffectiveAreas(req);
         if (effectiveAreas !== null) {
@@ -1675,19 +1676,19 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // PUT /api/users/:id — Editar usuário
-      app.put('/api/users/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.put('/api/users/:id', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = userRepository.getById(id);
+        const existing = await userRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Usuário não encontrado' });
           return;
         }
         const { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo } = req.body || {};
-        const updated = userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo });
+        const updated = await userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo });
         if (!updated) {
           res.status(500).json({ error: 'Erro ao atualizar usuário' });
           return;
@@ -1697,29 +1698,29 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // DELETE /api/users/:id — Deletar usuário (admin only)
-      app.delete('/api/users/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+      app.delete('/api/users/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = userRepository.getById(id);
+        const existing = await userRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Usuário não encontrado' });
           return;
         }
-        userRepository.delete(id);
+        await userRepository.delete(id);
         res.json({ success: true });
       });
 
       // POST /api/users/cleanup — Remove usuários com dados corrompidos/ilegíveis (admin only)
-      app.post('/api/users/cleanup', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (_req: Request, res: Response) => {
-        const allUsers = userRepository.getAll();
+      app.post('/api/users/cleanup', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (_req: Request, res: Response) => {
+        const allUsers = await userRepository.getAll();
         let removed = 0;
 
         for (const user of allUsers) {
           if (!isReadableText(user.nome) || !isReadableText(user.username) || !isReadableText(user.cargo || '') || !isReadableText(user.contato || '')) {
-            userRepository.delete(user.id);
+            await userRepository.delete(user.id);
             removed++;
           }
         }
@@ -1727,11 +1728,11 @@ export function createServer(deps: ServerDependencies): Express {
         // Also clean corrupted areas
         let areasRemoved = 0;
         if (deps.areaRepository) {
-          const allAreas = deps.areaRepository.getAll();
+          const allAreas = await deps.areaRepository.getAll();
           for (const area of allAreas) {
             if (!isReadableText(area.nome) || !isReadableText(area.codigo)) {
               try {
-                deps.db.prepare('DELETE FROM areas WHERE id = ?').run(area.id);
+                await deps.db.query('DELETE FROM areas WHERE id = $1', [area.id]);
                 areasRemoved++;
               } catch { /* skip */ }
             }
@@ -1742,10 +1743,10 @@ export function createServer(deps: ServerDependencies): Express {
         let schedulesRemoved = 0;
         if (deps.db) {
           try {
-            const schedules = deps.db.prepare('SELECT id, area, colaborador FROM escalation_schedules').all() as any[];
+            const schedules = (await deps.db.query('SELECT id, area, colaborador FROM escalation_schedules')).rows as any[];
             for (const sched of schedules) {
               if (!isReadableText(sched.area) || !isReadableText(sched.colaborador)) {
-                deps.db.prepare('DELETE FROM escalation_schedules WHERE id = ?').run(sched.id);
+                await deps.db.query('DELETE FROM escalation_schedules WHERE id = $1', [sched.id]);
                 schedulesRemoved++;
               }
             }
@@ -1762,30 +1763,30 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // POST /api/users/:id/approve — Aprovar plantonista pendente (Responsável/Adm)
-      app.post('/api/users/:id/approve', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (req: Request, res: Response) => {
+      app.post('/api/users/:id/approve', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-        const existing = userRepository.getById(id);
+        const existing = await userRepository.getById(id);
         if (!existing) { res.status(404).json({ error: 'Usuário não encontrado' }); return; }
         // Move user from PENDENTE_APROVACAO to their requested area
         const targetArea = existing.areaSolicitada || existing.areaCodigo;
-        userRepository.update(id, { aprovado: true, areaCodigo: targetArea, areaSolicitada: null });
+        await userRepository.update(id, { aprovado: true, areaCodigo: targetArea, areaSolicitada: null });
         res.json({ success: true, message: 'Plantonista aprovado!' });
       });
 
       // POST /api/users/:id/reject — Rejeitar plantonista pendente (Responsável/Adm)
-      app.post('/api/users/:id/reject', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (req: Request, res: Response) => {
+      app.post('/api/users/:id/reject', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-        const existing = userRepository.getById(id);
+        const existing = await userRepository.getById(id);
         if (!existing) { res.status(404).json({ error: 'Usuário não encontrado' }); return; }
-        userRepository.update(id, { ativo: false, aprovado: false });
+        await userRepository.update(id, { ativo: false, aprovado: false });
         res.json({ success: true, message: 'Plantonista rejeitado.' });
       });
 
       // GET /api/users/pending — Listar plantonistas pendentes de aprovação
-      app.get('/api/users/pending', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), (_req: Request, res: Response) => {
-        const allUsers = userRepository.getAll();
+      app.get('/api/users/pending', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), async (_req: Request, res: Response) => {
+        const allUsers = await userRepository.getAll();
         const pending = allUsers.filter(u => !u.aprovado && u.ativo);
         const result = pending.map(({ senhaHash, ...u }) => u);
         res.json(result);
@@ -1797,29 +1798,29 @@ export function createServer(deps: ServerDependencies): Express {
         const userAreaRepo = deps.userAreaRepository;
 
         // GET /api/users/:id/areas — List linked areas for a user
-        app.get('/api/users/:id/areas', authMiddleware, (req: Request, res: Response) => {
+        app.get('/api/users/:id/areas', authMiddleware, async (req: Request, res: Response) => {
           const id = parseInt(req.params.id as string, 10);
           if (isNaN(id)) {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = userRepository.getById(id);
+          const existing = await userRepository.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
           }
-          const areas = userAreaRepo.getAreasForUser(id);
+          const areas = await userAreaRepo.getAreasForUser(id);
           res.json(areas);
         });
 
         // POST /api/users/:id/areas — Add area binding (Admin only)
-        app.post('/api/users/:id/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+        app.post('/api/users/:id/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
           const id = parseInt(req.params.id as string, 10);
           if (isNaN(id)) {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = userRepository.getById(id);
+          const existing = await userRepository.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1829,24 +1830,24 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'areaCodigo é obrigatório' });
             return;
           }
-          userAreaRepo.addAreaBinding(id, areaCodigo);
+          await userAreaRepo.addAreaBinding(id, areaCodigo);
           res.status(201).json({ success: true, userId: id, areaCodigo });
         });
 
         // DELETE /api/users/:id/areas/:areaCodigo — Remove area binding (Admin only)
-        app.delete('/api/users/:id/areas/:areaCodigo', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+        app.delete('/api/users/:id/areas/:areaCodigo', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
           const id = parseInt(req.params.id as string, 10);
           if (isNaN(id)) {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = userRepository.getById(id);
+          const existing = await userRepository.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
           }
           const areaCodigo = req.params.areaCodigo as string;
-          userAreaRepo.removeAreaBinding(id, areaCodigo);
+          await userAreaRepo.removeAreaBinding(id, areaCodigo);
           res.json({ success: true });
         });
       }
@@ -1858,9 +1859,9 @@ export function createServer(deps: ServerDependencies): Express {
       const areaRepository = deps.areaRepository;
 
       // GET /api/areas — Listar áreas cadastradas
-      app.get('/api/areas', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
+      app.get('/api/areas', authMiddleware, dbAreaFilterMiddleware, async (req: Request, res: Response) => {
         const effectiveAreas = getEffectiveAreas(req);
-        let areas = areaRepository.getAll();
+        let areas = await areaRepository.getAll();
         if (effectiveAreas !== null) {
           areas = areas.filter(a => effectiveAreas.includes(a.codigo));
         }
@@ -1868,46 +1869,46 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // POST /api/areas — Criar nova área (admin only)
-      app.post('/api/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+      app.post('/api/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
         const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
         if (!codigo || !nome) {
           res.status(400).json({ error: 'codigo e nome são obrigatórios' });
           return;
         }
-        const area = areaRepository.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
+        const area = await areaRepository.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
         res.status(201).json(area);
       });
 
       // PUT /api/areas/:id — Editar área
-      app.put('/api/areas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.put('/api/areas/:id', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = areaRepository.getById(id);
+        const existing = await areaRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
         const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
-        const updated = areaRepository.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
+        const updated = await areaRepository.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
         res.json(updated);
       });
 
       // DELETE /api/areas/:id — Deletar área (admin only)
-      app.delete('/api/areas/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), (req: Request, res: Response) => {
+      app.delete('/api/areas/:id', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = areaRepository.getById(id);
+        const existing = await areaRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
-        areaRepository.delete(id);
+        await areaRepository.delete(id);
         res.json({ success: true });
       });
 
@@ -1917,21 +1918,21 @@ export function createServer(deps: ServerDependencies): Express {
         const areaEscalationChainRepo = deps.areaEscalationChainRepository;
 
         // GET /api/areas/:codigo/escalation-chain — Get escalation chain for an area
-        app.get('/api/areas/:codigo/escalation-chain', authMiddleware, (req: Request, res: Response) => {
+        app.get('/api/areas/:codigo/escalation-chain', authMiddleware, async (req: Request, res: Response) => {
           const codigo = req.params.codigo as string;
-          const area = areaRepository.getByCodigo(codigo);
+          const area = await areaRepository.getByCodigo(codigo);
           if (!area) {
             res.status(404).json({ error: 'Área não encontrada' });
             return;
           }
-          const chain = areaEscalationChainRepo.getByArea(codigo);
+          const chain = await areaEscalationChainRepo.getByArea(codigo);
           res.json(chain);
         });
 
         // PUT /api/areas/:codigo/escalation-chain — Save escalation chain for an area
-        app.put('/api/areas/:codigo/escalation-chain', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+        app.put('/api/areas/:codigo/escalation-chain', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
           const codigo = req.params.codigo as string;
-          const area = areaRepository.getByCodigo(codigo);
+          const area = await areaRepository.getByCodigo(codigo);
           if (!area) {
             res.status(404).json({ error: 'Área não encontrada' });
             return;
@@ -1941,21 +1942,21 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'Body deve conter um array "chain" de membros da cadeia de escalação' });
             return;
           }
-          areaEscalationChainRepo.replaceChain(codigo, chain);
+          await areaEscalationChainRepo.replaceChain(codigo, chain);
           res.json({ success: true });
         });
       }
 
       // GET /api/areas/:codigo/users — Get all users in an area
-      app.get('/api/areas/:codigo/users', authMiddleware, (req: Request, res: Response) => {
+      app.get('/api/areas/:codigo/users', authMiddleware, async (req: Request, res: Response) => {
         const codigo = req.params.codigo as string;
-        const area = areaRepository.getByCodigo(codigo);
+        const area = await areaRepository.getByCodigo(codigo);
         if (!area) {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
         if (deps.userRepository) {
-          const users = deps.userRepository.getByArea(codigo);
+          const users = await deps.userRepository.getByArea(codigo);
           const usersWithoutPassword = users.map(({ senhaHash, ...u }) => u);
           res.json(usersWithoutPassword);
         } else {
@@ -1970,7 +1971,7 @@ export function createServer(deps: ServerDependencies): Express {
       const periodoRepository = deps.periodoRepository;
 
       // GET /api/periodos/calendar — Calendar data with day-by-day assignment status
-      app.get('/api/periodos/calendar', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
+      app.get('/api/periodos/calendar', authMiddleware, dbAreaFilterMiddleware, async (req: Request, res: Response) => {
         const areaCodigo = req.query.areaCodigo as string | undefined;
         const monthParam = req.query.month as string | undefined;
         const yearParam = req.query.year as string | undefined;
@@ -1998,7 +1999,7 @@ export function createServer(deps: ServerDependencies): Express {
         }
 
         // Get all periodos for this area
-        const periodos = periodoRepository.getByArea(areaCodigo);
+        const periodos = await periodoRepository.getByArea(areaCodigo);
 
         // Build a map of date -> periodo info
         const daysInMonth = new Date(year, month, 0).getDate();
@@ -2007,7 +2008,7 @@ export function createServer(deps: ServerDependencies): Express {
         // Get escalas for this area (if escalaRepository is available)
         const escalaRepo = deps.escalaRepository;
         const userRepo = deps.userRepository;
-        const allEscalas = escalaRepo ? escalaRepo.getByArea(areaCodigo) : [];
+        const allEscalas = escalaRepo ? await escalaRepo.getByArea(areaCodigo) : [];
 
         for (let day = 1; day <= daysInMonth; day++) {
           const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -2023,7 +2024,7 @@ export function createServer(deps: ServerDependencies): Express {
             if (matchingEscalas.length > 0 && userRepo) {
               // Get the plantonista name from the first matching escala
               const firstEscala = matchingEscalas[0];
-              const allUsers = userRepo.getAll();
+              const allUsers = await userRepo.getAll();
               const assignedUser = allUsers.find(u => u.codigo === firstEscala.usuarioCodigo);
               days.push({
                 date: dateStr,
@@ -2222,64 +2223,64 @@ export function createServer(deps: ServerDependencies): Express {
     });
 
     // POST /api/problemas — Criar problema
-    app.post('/api/problemas', (req: Request, res: Response) => {
+    app.post('/api/problemas', async (req: Request, res: Response) => {
       const { codigo, descricao, areas } = req.body || {};
       if (!codigo || !descricao) {
         res.status(400).json({ error: 'codigo e descricao são obrigatórios' });
         return;
       }
       // Check unique codigo
-      if (problemaRepo.getByCodigo(codigo)) {
+      if (await problemaRepo.getByCodigo(codigo)) {
         res.status(400).json({ error: 'Código já existe' });
         return;
       }
-      const problema = problemaRepo.create({ codigo, descricao });
+      const problema = await problemaRepo.create({ codigo, descricao });
       // Add areas if provided
       if (Array.isArray(areas) && areas.length > 0) {
-        problemaRepo.replaceAreas(problema.id, areas);
+        await problemaRepo.replaceAreas(problema.id, areas);
       }
-      const result = { ...problema, areas: problemaRepo.getAreas(problema.id) };
+      const result = { ...problema, areas: await problemaRepo.getAreas(problema.id) };
       res.status(201).json(result);
     });
 
     // PUT /api/problemas/:id — Editar problema
-    app.put('/api/problemas/:id', (req: Request, res: Response) => {
+    app.put('/api/problemas/:id', async (req: Request, res: Response) => {
       const id = parseInt(req.params.id as string, 10);
       if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-      const existing = problemaRepo.getById(id);
+      const existing = await problemaRepo.getById(id);
       if (!existing) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
       const { codigo, descricao, areas } = req.body || {};
-      const updated = problemaRepo.update(id, { codigo, descricao });
+      const updated = await problemaRepo.update(id, { codigo, descricao });
       if (Array.isArray(areas)) {
-        problemaRepo.replaceAreas(id, areas);
+        await problemaRepo.replaceAreas(id, areas);
       }
-      const result = { ...updated, areas: problemaRepo.getAreas(id) };
+      const result = { ...updated, areas: await problemaRepo.getAreas(id) };
       res.json(result);
     });
 
     // DELETE /api/problemas/:id — Deletar problema
-    app.delete('/api/problemas/:id', (req: Request, res: Response) => {
+    app.delete('/api/problemas/:id', async (req: Request, res: Response) => {
       const id = parseInt(req.params.id as string, 10);
       if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-      const existing = problemaRepo.getById(id);
+      const existing = await problemaRepo.getById(id);
       if (!existing) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
-      problemaRepo.delete(id);
+      await problemaRepo.delete(id);
       res.json({ success: true });
     });
 
     // PUT /api/problemas/:id/areas — Salvar grid de áreas do problema
-    app.put('/api/problemas/:id/areas', (req: Request, res: Response) => {
+    app.put('/api/problemas/:id/areas', async (req: Request, res: Response) => {
       const id = parseInt(req.params.id as string, 10);
       if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-      const existing = problemaRepo.getById(id);
+      const existing = await problemaRepo.getById(id);
       if (!existing) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
       const { areas } = req.body || {};
       if (!Array.isArray(areas)) {
         res.status(400).json({ error: 'Body deve conter array "areas" com { areaCodigo, ordem }' });
         return;
       }
-      problemaRepo.replaceAreas(id, areas);
-      const result = problemaRepo.getAreas(id);
+      await problemaRepo.replaceAreas(id, areas);
+      const result = await problemaRepo.getAreas(id);
       res.json(result);
     });
   }
@@ -2290,10 +2291,10 @@ export function createServer(deps: ServerDependencies): Express {
     const permRepo = deps.userPermissionRepository;
 
     // GET /api/users/:id/permissions — Get permissions for a user
-    app.get('/api/users/:id/permissions', (req: Request, res: Response) => {
+    app.get('/api/users/:id/permissions', async (req: Request, res: Response) => {
       const id = parseInt(req.params.id as string, 10);
       if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-      const perms = permRepo.getByUser(id);
+      const perms = await permRepo.getByUser(id);
       res.json(perms);
     });
 

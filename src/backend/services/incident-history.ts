@@ -15,10 +15,10 @@ export class IncidentHistoryService {
     this.repository = repository;
   }
 
-  recordIncident(incident: IncidentRecord): string {
+  async recordIncident(incident: IncidentRecord): Promise<string> {
     const id = incident.id || uuidv4();
 
-    this.repository.create({
+    await this.repository.create({
       id,
       monitorId: incident.monitorId,
       monitorName: incident.monitorName,
@@ -31,8 +31,8 @@ export class IncidentHistoryService {
     return id;
   }
 
-  recordEscalation(incidentId: string, escalation: EscalationRecord): void {
-    this.repository.createEscalationEvent({
+  async recordEscalation(incidentId: string, escalation: EscalationRecord): Promise<void> {
+    await this.repository.createEscalationEvent({
       incidentId,
       fromPerson: escalation.fromPerson,
       toPerson: escalation.toPerson,
@@ -40,11 +40,11 @@ export class IncidentHistoryService {
     });
   }
 
-  recordResolution(incidentId: string, resolution: ResolutionRecord): void {
-    this.repository.resolve(incidentId, resolution.resolvedBy, resolution.resolvedAt);
+  async recordResolution(incidentId: string, resolution: ResolutionRecord): Promise<void> {
+    await this.repository.resolve(incidentId, resolution.resolvedBy, resolution.resolvedAt);
   }
 
-  queryHistory(filters: HistoryFilters): IncidentRecord[] {
+  async queryHistory(filters: HistoryFilters): Promise<IncidentRecord[]> {
     return this.repository.query(filters);
   }
 }

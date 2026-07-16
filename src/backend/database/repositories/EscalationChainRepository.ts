@@ -1,49 +1,50 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { EscalationChainMember } from '../../../shared/types';
 
 export class EscalationChainRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  getByTeam(teamId: string): EscalationChainMember[] {
-    const stmt = this.db.prepare(`
+  async getByTeam(teamId: string): Promise<EscalationChainMember[]> {
+    const res = await this.db.query(`
       SELECT person_name, person_contact, position
       FROM escalation_chains
-      WHERE team_id = ?
+      WHERE team_id = $1
       ORDER BY position ASC
-    `);
-    const rows = stmt.all(teamId) as any[];
-    return rows.map(this.mapRow);
+    `, [teamId]);
+    return res.rows.map(this.mapRow);
   }
 
-  replaceChain(teamId: string, chain: EscalationChainMember[]): void {
-    const deleteStmt = this.db.prepare('DELETE FROM escalation_chains WHERE team_id = ?');
-    const insertStmt = this.db.prepare(`
-      INSERT INTO escalation_chains (team_id, person_name, person_contact, position)
-      VALUES (?, ?, ?, ?)
-    `);
-
-    const replaceAll = this.db.transaction((members: EscalationChainMember[]) => {
-      deleteStmt.run(teamId);
-      for (const member of members) {
-        insertStmt.run(
+  async replaceChain(teamId: string, chain: EscalationChainMember[]): Promise<void> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM escalation_chains WHERE team_id = $1', [teamId]);
+      for (const member of chain) {
+        await client.query(`
+          INSERT INTO escalation_chains (team_id, person_name, person_contact, position)
+          VALUES ($1, $2, $3, $4)
+        `, [
           teamId,
           member.personName,
           member.personContact || null,
           member.position
-        );
+        ]);
       }
-    });
-
-    replaceAll(chain);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
-  deleteByTeam(teamId: string): void {
-    const stmt = this.db.prepare('DELETE FROM escalation_chains WHERE team_id = ?');
-    stmt.run(teamId);
+  async deleteByTeam(teamId: string): Promise<void> {
+    await this.db.query('DELETE FROM escalation_chains WHERE team_id = $1', [teamId]);
   }
 
   private mapRow(row: any): EscalationChainMember {

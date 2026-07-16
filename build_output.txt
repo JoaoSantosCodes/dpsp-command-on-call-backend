@@ -1,0 +1,51 @@
+
+> dpsp-command-on-call-backend@1.0.0 build
+> tsc -p tsconfig.json
+
+src/backend/middleware/auth.ts(147,7): error TS2740: Type 'Promise<string[]>' is missing the following properties from type 'string[]': length, pop, push, concat, and 29 more.
+src/backend/middleware/auth.ts(151,50): error TS2488: Type 'Promise<string[]>' must have a '[Symbol.iterator]()' method that returns an iterator.
+src/backend/middleware/auth.ts(152,30): error TS2339: Property 'includes' does not exist on type 'any[] | Promise<string[]>'.
+  Property 'includes' does not exist on type 'Promise<string[]>'.
+src/backend/server.ts(199,26): error TS2488: Type 'Promise<Area[]>' must have a '[Symbol.iterator]()' method that returns an iterator.
+src/backend/server.ts(355,26): error TS2339: Property 'map' does not exist on type 'Promise<TeamRow[]>'.
+src/backend/server.ts(355,31): error TS7006: Parameter 'team' implicitly has an 'any' type.
+src/backend/server.ts(363,52): error TS2339: Property 'length' does not exist on type 'Promise<EscalationChainMember[]>'.
+src/backend/server.ts(376,9): error TS2801: This condition will always return true since this 'Promise<boolean>' is always defined.
+src/backend/server.ts(445,38): error TS2339: Property 'find' does not exist on type 'Promise<User[]>'.
+src/backend/server.ts(445,43): error TS7006: Parameter 'u' implicitly has an 'any' type.
+src/backend/server.ts(571,47): error TS2339: Property 'find' does not exist on type 'Promise<Area[]>'.
+src/backend/server.ts(572,20): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/backend/server.ts(595,48): error TS2339: Property 'areaCodigo' does not exist on type 'Promise<User | undefined>'.
+src/backend/server.ts(596,49): error TS2339: Property 'cargo' does not exist on type 'Promise<User | undefined>'.
+src/backend/server.ts(597,51): error TS2339: Property 'contato' does not exist on type 'Promise<User | undefined>'.
+src/backend/server.ts(599,54): error TS2339: Property 'id' does not exist on type 'Promise<User | undefined>'.
+src/backend/server.ts(632,46): error TS2339: Property 'find' does not exist on type 'Promise<Area[]>'.
+src/backend/server.ts(632,51): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/backend/server.ts(640,48): error TS2339: Property 'find' does not exist on type 'Promise<Periodo[]>'.
+src/backend/server.ts(648,46): error TS2339: Property 'find' does not exist on type 'Promise<User[]>'.
+src/backend/server.ts(652,55): error TS2339: Property 'some' does not exist on type 'Promise<Escala[]>'.
+src/backend/server.ts(790,48): error TS2339: Property 'find' does not exist on type 'Promise<Periodo[]>'.
+src/backend/server.ts(798,46): error TS2339: Property 'find' does not exist on type 'Promise<User[]>'.
+src/backend/server.ts(802,55): error TS2339: Property 'some' does not exist on type 'Promise<Escala[]>'.
+src/backend/server.ts(1143,23): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(1387,54): error TS2339: Property 'map' does not exist on type 'Promise<MonitorAreaMapping[]>'.
+src/backend/server.ts(1387,58): error TS7006: Parameter 'm' implicitly has an 'any' type.
+src/backend/server.ts(1395,46): error TS2339: Property 'find' does not exist on type 'Promise<MonitorAreaMapping[]>'.
+src/backend/server.ts(1395,51): error TS7006: Parameter 'm' implicitly has an 'any' type.
+src/backend/server.ts(1402,28): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(1418,44): error TS2339: Property 'find' does not exist on type 'Promise<Area[]>'.
+src/backend/server.ts(1418,49): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/backend/server.ts(1448,27): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(1449,28): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(1457,32): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(1488,33): error TS2339: Property 'fallbackScope' does not exist on type 'Promise<AreaFallbackResult>'.
+src/backend/server.ts(1489,33): error TS2339: Property 'torre' does not exist on type 'Promise<AreaFallbackResult>'.
+src/backend/server.ts(1490,36): error TS2339: Property 'contacts' does not exist on type 'Promise<AreaFallbackResult>'.
+src/backend/server.ts(1809,28): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2004,26): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2013,41): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2029,32): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2235,11): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2239,24): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2242,9): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+src/backend/server.ts(2244,44): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.

@@ -161,7 +161,7 @@ export class CSVProcessor {
     };
   }
 
-  importSchedule(validatedData: ScheduleEntry[]): ImportResult {
+  async importSchedule(validatedData: ScheduleEntry[]): Promise<ImportResult> {
     if (validatedData.length === 0) {
       return {
         success: false,
@@ -190,16 +190,16 @@ export class CSVProcessor {
       if (!firstTeamId) firstTeamId = teamId;
 
       // Check if there's existing data
-      const existing = this.scheduleRepository.getByTeam(teamId);
+      const existing = await this.scheduleRepository.getByTeam(teamId);
       if (existing.length > 0) {
         replacedPrevious = true;
       }
 
       // Delete existing schedule for this team
-      this.scheduleRepository.deleteByTeam(teamId);
+      await this.scheduleRepository.deleteByTeam(teamId);
 
       // Insert new entries
-      this.scheduleRepository.insertMany(entries);
+      await this.scheduleRepository.insertMany(entries);
       totalImported += entries.length;
     }
 

@@ -1,53 +1,51 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { MonitorMapping } from '../../../shared/types';
 
 export class MonitorMappingRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  getByMonitorId(monitorId: number): MonitorMapping | undefined {
-    const stmt = this.db.prepare(
-      'SELECT monitor_id, team_id, monitor_name, created_at, updated_at FROM monitor_team_mapping WHERE monitor_id = ?'
+  async getByMonitorId(monitorId: number): Promise<MonitorMapping | undefined> {
+    const res = await this.db.query(
+      'SELECT monitor_id, team_id, monitor_name, created_at, updated_at FROM monitor_team_mapping WHERE monitor_id = $1',
+      [monitorId]
     );
-    const row = stmt.get(monitorId) as any;
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  setMapping(monitorId: number, teamId: string, monitorName: string): void {
-    const stmt = this.db.prepare(`
+  async setMapping(monitorId: number, teamId: string, monitorName: string): Promise<void> {
+    await this.db.query(`
       INSERT INTO monitor_team_mapping (monitor_id, team_id, monitor_name, created_at, updated_at)
-      VALUES (?, ?, ?, datetime('now'), datetime('now'))
+      VALUES ($1, $2, $3, NOW(), NOW())
       ON CONFLICT(monitor_id) DO UPDATE SET
         team_id = excluded.team_id,
         monitor_name = excluded.monitor_name,
-        updated_at = datetime('now')
-    `);
-    stmt.run(monitorId, teamId, monitorName);
+        updated_at = NOW()
+    `, [monitorId, teamId, monitorName]);
   }
 
-  getByTeamId(teamId: string): MonitorMapping[] {
-    const stmt = this.db.prepare(
-      'SELECT monitor_id, team_id, monitor_name, created_at, updated_at FROM monitor_team_mapping WHERE team_id = ?'
+  async getByTeamId(teamId: string): Promise<MonitorMapping[]> {
+    const res = await this.db.query(
+      'SELECT monitor_id, team_id, monitor_name, created_at, updated_at FROM monitor_team_mapping WHERE team_id = $1',
+      [teamId]
     );
-    const rows = stmt.all(teamId) as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  getAllMapped(): MonitorMapping[] {
-    const stmt = this.db.prepare(
+  async getAllMapped(): Promise<MonitorMapping[]> {
+    const res = await this.db.query(
       'SELECT monitor_id, team_id, monitor_name, created_at, updated_at FROM monitor_team_mapping'
     );
-    const rows = stmt.all() as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  deleteMapping(monitorId: number): void {
-    const stmt = this.db.prepare('DELETE FROM monitor_team_mapping WHERE monitor_id = ?');
-    stmt.run(monitorId);
+  async deleteMapping(monitorId: number): Promise<void> {
+    await this.db.query('DELETE FROM monitor_team_mapping WHERE monitor_id = $1', [monitorId]);
   }
 
   private mapRow(row: any): MonitorMapping {

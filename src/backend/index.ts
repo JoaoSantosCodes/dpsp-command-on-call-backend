@@ -5,6 +5,7 @@ import 'dotenv/config';
 import http from 'http';
 import { client, v1 } from '@datadog/datadog-api-client';
 import { initializeDatabase } from './database/init';
+import { Pool } from 'pg';
 import {
   MonitorMappingRepository,
   MonitorAreaMappingRepository,
@@ -90,12 +91,12 @@ function createDatadogClient(): DatadogClient {
 async function main(): Promise<void> {
   console.log('[CommandCenter] Starting backend...');
 
-  // 1. Initialize SQLite database
-  const db = initializeDatabase();
+  // 1. Initialize Postgres pool and database
+  const db = await initializeDatabase();
   console.log('[CommandCenter] Database initialized');
 
   // 1.1 Run area deduplication migration
-  const migrationResult = runDeduplication(db);
+  const migrationResult = await runDeduplication(db);
   console.log(
     `[Migration] Area deduplication complete: ${migrationResult.duplicatesFound} duplicates found, ` +
     `${migrationResult.duplicatesRemoved} removed, ${migrationResult.referencesReassigned} references reassigned`
@@ -119,11 +120,11 @@ async function main(): Promise<void> {
 
   // 2.5 Seed default admin if missing
   try {
-    const adminExists = userRepository.getByUsername('admin');
+    const adminExists = await userRepository.getByUsername('admin');
     if (!adminExists) {
       console.log('[CommandCenter] No admin user found. Creating default admin...');
       const bcrypt = require('bcrypt');
-      userRepository.create({
+      await userRepository.create({
         codigo: 'ADM-001',
         areaCodigo: null,
         areaSolicitada: null,
@@ -163,15 +164,15 @@ async function main(): Promise<void> {
   const wsServer = new CommandCenterWebSocket();
 
   // 5. Wire PollingService → WebSocket (broadcast monitor updates)
-  datadogPollingService.onMonitorStateChange((monitor, previousState: MonitorState) => {
+  datadogPollingService.onMonitorStateChange(async (monitor, previousState: MonitorState) => {
     // Broadcast every state change to connected clients
     wsServer.broadcastMonitorsUpdated(datadogPollingService.getMonitors());
 
     // If monitor enters Alert state, start escalation
     if (monitor.state === 'Alert' && previousState !== 'Alert') {
-      const teamId = monitorMappingService.getTeamForMonitor(monitor.id);
+      const teamId = await monitorMappingService.getTeamForMonitor(monitor.id);
       if (teamId) {
-        const incidentId = escalationEngine.startEscalation({
+        const incidentId = await escalationEngine.startEscalation({
           monitorId: monitor.id,
           monitorName: monitor.name,
           teamId,
@@ -228,36 +229,33 @@ async function main(): Promise<void> {
     const { isReadableText } = require('./services/escalation-csv-processor');
     let cleanedUsers = 0, cleanedAreas = 0, cleanedSchedules = 0;
 
-    db.pragma('foreign_keys = OFF');
-
     // Clean corrupted users
-    const allUsers = userRepository.getAll();
+    const allUsers = await userRepository.getAll();
     for (const user of allUsers) {
       if (!isReadableText(user.nome) || !isReadableText(user.username)) {
-        try { userRepository.delete(user.id); cleanedUsers++; } catch { /* skip */ }
+        try { await userRepository.delete(user.id); cleanedUsers++; } catch { /* skip */ }
       }
     }
 
     // Clean corrupted areas
-    const allAreas = areaRepository.getAll();
+    const allAreas = await areaRepository.getAll();
     for (const area of allAreas) {
       if (!isReadableText(area.nome) || !isReadableText(area.codigo)) {
-        try { db.prepare('DELETE FROM areas WHERE id = ?').run(area.id); cleanedAreas++; } catch { /* skip */ }
+        try { await db.query('DELETE FROM areas WHERE id = $1', [area.id]); cleanedAreas++; } catch { /* skip */ }
       }
     }
 
     // Clean corrupted escalation schedules
     try {
-      const schedules = db.prepare('SELECT id, area, colaborador FROM escalation_schedules').all() as any[];
+      const res = await db.query('SELECT id, area, colaborador FROM escalation_schedules');
+      const schedules = res.rows as any[];
       for (const sched of schedules) {
         if (!isReadableText(sched.area) || !isReadableText(sched.colaborador)) {
-          db.prepare('DELETE FROM escalation_schedules WHERE id = ?').run(sched.id);
+          await db.query('DELETE FROM escalation_schedules WHERE id = $1', [sched.id]);
           cleanedSchedules++;
         }
       }
     } catch { /* table may not exist */ }
-
-    db.pragma('foreign_keys = ON');
 
     if (cleanedUsers || cleanedAreas || cleanedSchedules) {
       console.log(`[CommandCenter] Cleanup: removed ${cleanedUsers} corrupted users, ${cleanedAreas} areas, ${cleanedSchedules} schedules`);
@@ -301,7 +299,7 @@ async function main(): Promise<void> {
       console.log('[CommandCenter] HTTP server closed');
 
       // Close database
-      db.close();
+      db.end();
       console.log('[CommandCenter] Database connection closed');
 
       process.exit(0);

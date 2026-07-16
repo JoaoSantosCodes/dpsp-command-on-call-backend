@@ -38,18 +38,18 @@ export class EscalationEngine {
     this.scheduleManager = scheduleManager;
   }
 
-  startEscalation(incident: {
+  async startEscalation(incident: {
     monitorId: number;
     monitorName: string;
     teamId: string;
-  }): string {
-    const onCallPerson = this.scheduleManager.getCurrentOnCall(incident.teamId);
+  }): Promise<string> {
+    const onCallPerson = await this.scheduleManager.getCurrentOnCall(incident.teamId);
     const personName = onCallPerson?.name ?? 'unknown';
 
     const id = uuidv4();
     const now = new Date();
 
-    this.incidentRepository.create({
+    await this.incidentRepository.create({
       id,
       monitorId: incident.monitorId,
       monitorName: incident.monitorName,
@@ -59,11 +59,11 @@ export class EscalationEngine {
       startedAt: now,
     });
 
-    const chain = this.escalationChainRepository.getByTeam(incident.teamId);
+    const chain = await this.escalationChainRepository.getByTeam(incident.teamId);
 
     if (chain.length === 0) {
       // No escalation chain configured – mark as exhausted immediately
-      this.incidentRepository.updateStatus(id, 'escalation_exhausted');
+      await this.incidentRepository.updateStatus(id, 'escalation_exhausted');
       return id;
     }
 
@@ -72,7 +72,7 @@ export class EscalationEngine {
     return id;
   }
 
-  acknowledgeIncident(incidentId: string, personId: string): void {
+  async acknowledgeIncident(incidentId: string, personId: string): Promise<void> {
     const existingTimer = this.activeTimers.get(incidentId);
     if (existingTimer) {
       clearTimeout(existingTimer.timer);
@@ -80,11 +80,11 @@ export class EscalationEngine {
     }
 
     const now = new Date();
-    this.incidentRepository.acknowledge(incidentId, personId, now);
+    await this.incidentRepository.acknowledge(incidentId, personId, now);
   }
 
-  getActiveEscalations(): ActiveIncident[] {
-    const activeIncidents = this.incidentRepository.getActive();
+  async getActiveEscalations(): Promise<ActiveIncident[]> {
+    const activeIncidents = await this.incidentRepository.getActive();
     const now = new Date();
 
     return activeIncidents
@@ -135,7 +135,7 @@ export class EscalationEngine {
     chain: EscalationChainMember[]
   ): void {
     const timer = setTimeout(() => {
-      this.handleEscalationTimeout(incidentId, teamId, currentLevel, chain);
+      this.handleEscalationTimeout(incidentId, teamId, currentLevel, chain).catch(console.error);
     }, ESCALATION_TIMEOUT_MS);
 
     this.activeTimers.set(incidentId, {
@@ -147,19 +147,19 @@ export class EscalationEngine {
     });
   }
 
-  private handleEscalationTimeout(
+  private async handleEscalationTimeout(
     incidentId: string,
     teamId: string,
     currentLevel: number,
     chain: EscalationChainMember[]
-  ): void {
+  ): Promise<void> {
     this.activeTimers.delete(incidentId);
 
     const nextLevel = currentLevel + 1;
 
     if (nextLevel >= chain.length) {
       // Chain exhausted
-      this.incidentRepository.updateStatus(incidentId, 'escalation_exhausted');
+      await this.incidentRepository.updateStatus(incidentId, 'escalation_exhausted');
 
       const event: EscalationEvent = {
         incidentId,
@@ -176,7 +176,7 @@ export class EscalationEngine {
     const toPerson = chain[nextLevel].personName;
 
     // Record escalation event in database
-    this.incidentRepository.createEscalationEvent({
+    await this.incidentRepository.createEscalationEvent({
       incidentId,
       fromPerson,
       toPerson,

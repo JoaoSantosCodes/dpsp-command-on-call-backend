@@ -1,6 +1,6 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { User, UserPerfil } from '../../shared/types';
 
 const SALT_ROUNDS = 10;
@@ -35,10 +35,10 @@ export interface AuthResult {
 }
 
 export class AuthService {
-  private db: Database.Database;
+  private db: Pool;
   private jwtSecret: string;
 
-  constructor(db: Database.Database, jwtSecret: string) {
+  constructor(db: Pool, jwtSecret: string) {
     if (!jwtSecret) {
       throw new Error('JWT secret is required for AuthService');
     }
@@ -47,9 +47,11 @@ export class AuthService {
   }
 
   async login(username: string, senha: string): Promise<AuthResult> {
-    const row = this.db.prepare(
-      'SELECT * FROM users WHERE username = ?'
-    ).get(username) as any | undefined;
+    const res = await this.db.query(
+      'SELECT * FROM users WHERE username = $1',
+      [username]
+    );
+    const row = res.rows[0];
 
     if (!row) {
       return { success: false, error: 'Dados Incorretos!' };
@@ -91,31 +93,30 @@ export class AuthService {
 
   async register(data: RegisterData): Promise<AuthResult> {
     // Check if username already exists
-    const existing = this.db.prepare(
-      'SELECT id FROM users WHERE username = ?'
-    ).get(data.username) as any | undefined;
-
-    if (existing) {
+    let res = await this.db.query(
+      'SELECT id FROM users WHERE username = $1',
+      [data.username]
+    );
+    if (res.rows.length > 0) {
       return { success: false, error: 'Username já existe' };
     }
 
     // Check if codigo already exists
-    const existingCodigo = this.db.prepare(
-      'SELECT id FROM users WHERE codigo = ?'
-    ).get(data.codigo) as any | undefined;
-
-    if (existingCodigo) {
+    res = await this.db.query(
+      'SELECT id FROM users WHERE codigo = $1',
+      [data.codigo]
+    );
+    if (res.rows.length > 0) {
       return { success: false, error: 'Código já existe' };
     }
 
     const senhaHash = await bcrypt.hash(data.senha, SALT_ROUNDS);
 
-    const stmt = this.db.prepare(`
+    res = await this.db.query(`
       INSERT INTO users (codigo, area_codigo, area_solicitada, nome, perfil, nivel_escalonamento, cargo, contato, username, senha_hash, ativo, aprovado)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-    `);
-
-    const result = stmt.run(
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11)
+      RETURNING *
+    `, [
       data.codigo,
       data.areaCodigo || null,
       data.areaSolicitada || null,
@@ -127,11 +128,9 @@ export class AuthService {
       data.username,
       senhaHash,
       data.aprovado !== undefined ? (data.aprovado ? 1 : 0) : 1
-    );
+    ]);
 
-    const row = this.db.prepare(
-      'SELECT * FROM users WHERE id = ?'
-    ).get(result.lastInsertRowid) as any;
+    const row = res.rows[0];
 
     const user: Omit<User, 'senhaHash'> = {
       id: row.id,

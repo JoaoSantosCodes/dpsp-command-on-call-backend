@@ -1,77 +1,75 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { Area } from '../../../shared/types';
 
 export class AreaRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  create(area: Omit<Area, 'id' | 'createdAt' | 'updatedAt'>): Area {
-    const stmt = this.db.prepare(`
+  async create(area: Omit<Area, 'id' | 'createdAt' | 'updatedAt'>): Promise<Area> {
+    const res = await this.db.query(`
       INSERT INTO areas (codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    `);
-    const result = stmt.run(area.codigo, area.nome, area.torre || null, area.coordenadorNome || null, area.coordenadorContato || null, area.gerenteNome || null, area.gerenteContato || null);
-    return this.getById(Number(result.lastInsertRowid))!;
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      RETURNING id
+    `, [area.codigo, area.nome, area.torre || null, area.coordenadorNome || null, area.coordenadorContato || null, area.gerenteNome || null, area.gerenteContato || null]);
+    return (await this.getById(res.rows[0].id))!;
   }
 
-  getById(id: number): Area | undefined {
-    const stmt = this.db.prepare(`
+  async getById(id: number): Promise<Area | undefined> {
+    const res = await this.db.query(`
       SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
-      FROM areas WHERE id = ?
-    `);
-    const row = stmt.get(id) as any;
+      FROM areas WHERE id = $1
+    `, [id]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  getByCodigo(codigo: string): Area | undefined {
-    const stmt = this.db.prepare(`
+  async getByCodigo(codigo: string): Promise<Area | undefined> {
+    const res = await this.db.query(`
       SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
-      FROM areas WHERE codigo = ?
-    `);
-    const row = stmt.get(codigo) as any;
+      FROM areas WHERE codigo = $1
+    `, [codigo]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  getAll(): Area[] {
-    const stmt = this.db.prepare(`
+  async getAll(): Promise<Area[]> {
+    const res = await this.db.query(`
       SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas ORDER BY nome ASC
     `);
-    const rows = stmt.all() as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  update(id: number, data: Partial<Omit<Area, 'id' | 'createdAt' | 'updatedAt'>>): Area | undefined {
+  async update(id: number, data: Partial<Omit<Area, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Area | undefined> {
     const fields: string[] = [];
     const values: any[] = [];
+    let idx = 1;
 
-    if (data.codigo !== undefined) { fields.push('codigo = ?'); values.push(data.codigo); }
-    if (data.nome !== undefined) { fields.push('nome = ?'); values.push(data.nome); }
-    if (data.torre !== undefined) { fields.push('torre = ?'); values.push(data.torre || null); }
-    if (data.coordenadorNome !== undefined) { fields.push('coordenador_nome = ?'); values.push(data.coordenadorNome || null); }
-    if (data.coordenadorContato !== undefined) { fields.push('coordenador_contato = ?'); values.push(data.coordenadorContato || null); }
-    if (data.gerenteNome !== undefined) { fields.push('gerente_nome = ?'); values.push(data.gerenteNome || null); }
-    if (data.gerenteContato !== undefined) { fields.push('gerente_contato = ?'); values.push(data.gerenteContato || null); }
+    if (data.codigo !== undefined) { fields.push(`codigo = $${idx++}`); values.push(data.codigo); }
+    if (data.nome !== undefined) { fields.push(`nome = $${idx++}`); values.push(data.nome); }
+    if (data.torre !== undefined) { fields.push(`torre = $${idx++}`); values.push(data.torre || null); }
+    if (data.coordenadorNome !== undefined) { fields.push(`coordenador_nome = $${idx++}`); values.push(data.coordenadorNome || null); }
+    if (data.coordenadorContato !== undefined) { fields.push(`coordenador_contato = $${idx++}`); values.push(data.coordenadorContato || null); }
+    if (data.gerenteNome !== undefined) { fields.push(`gerente_nome = $${idx++}`); values.push(data.gerenteNome || null); }
+    if (data.gerenteContato !== undefined) { fields.push(`gerente_contato = $${idx++}`); values.push(data.gerenteContato || null); }
 
     if (fields.length === 0) return this.getById(id);
 
-    fields.push("updated_at = datetime('now')");
+    fields.push("updated_at = NOW()");
     values.push(id);
 
-    const stmt = this.db.prepare(`UPDATE areas SET ${fields.join(', ')} WHERE id = ?`);
-    stmt.run(...values);
+    await this.db.query(`UPDATE areas SET ${fields.join(', ')} WHERE id = $${idx}`, values);
     return this.getById(id);
   }
 
-  delete(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM areas WHERE id = ?');
-    const result = stmt.run(id);
-    return result.changes > 0;
+  async delete(id: number): Promise<boolean> {
+    const res = await this.db.query('DELETE FROM areas WHERE id = $1', [id]);
+    return (res.rowCount || 0) > 0;
   }
 
   private mapRow(row: any): Area {

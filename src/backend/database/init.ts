@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 
 const TEAMS_SEED = [
   { id: 'team-alpha', name: 'Time Alpha', displayOrder: 1 },
@@ -14,8 +14,8 @@ const TEAMS_SEED = [
   { id: 'team-kilo', name: 'Time Kilo', displayOrder: 11 },
 ];
 
-function createTables(db: Database.Database): void {
-  db.exec(`
+async function createTables(db: Pool): Promise<void> {
+  await db.query(`
     CREATE TABLE IF NOT EXISTS teams (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -26,24 +26,24 @@ function createTables(db: Database.Database): void {
       monitor_id INTEGER PRIMARY KEY,
       team_id TEXT NOT NULL,
       monitor_name TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS schedules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       team_id TEXT NOT NULL REFERENCES teams(id),
       person_name TEXT NOT NULL,
       person_contact TEXT,
       date TEXT NOT NULL,
       start_time TEXT NOT NULL,
       end_time TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(team_id, date, start_time)
     );
 
     CREATE TABLE IF NOT EXISTS escalation_chains (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       team_id TEXT NOT NULL REFERENCES teams(id),
       person_name TEXT NOT NULL,
       person_contact TEXT,
@@ -58,35 +58,37 @@ function createTables(db: Database.Database): void {
       team_id TEXT NOT NULL,
       on_call_person TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
-      started_at TEXT NOT NULL DEFAULT (datetime('now')),
-      acknowledged_at TEXT,
+      started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      acknowledged_at TIMESTAMP,
       acknowledged_by TEXT,
-      resolved_at TEXT,
+      resolved_at TIMESTAMP,
       resolved_by TEXT
     );
 
     CREATE TABLE IF NOT EXISTS escalation_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       incident_id TEXT NOT NULL REFERENCES incidents(id),
       from_person TEXT NOT NULL,
       to_person TEXT NOT NULL,
       escalation_level INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
-    -- Tb_Areas: Áreas de responsabilidade
     CREATE TABLE IF NOT EXISTS areas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       codigo TEXT NOT NULL UNIQUE,
       nome TEXT NOT NULL,
       torre TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      coordenador_nome TEXT,
+      coordenador_contato TEXT,
+      gerente_nome TEXT,
+      gerente_contato TEXT
     );
 
-    -- Tb_Usuario: Usuários do sistema
     CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       codigo TEXT NOT NULL UNIQUE,
       area_codigo TEXT,
       nome TEXT NOT NULL,
@@ -97,53 +99,51 @@ function createTables(db: Database.Database): void {
       username TEXT NOT NULL UNIQUE,
       senha_hash TEXT NOT NULL,
       ativo INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
+      aprovado INTEGER NOT NULL DEFAULT 1,
+      area_solicitada TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (area_codigo) REFERENCES areas(codigo)
     );
 
-    -- Tb_User_Permissions: Permissões granulares por menu/tela
     CREATE TABLE IF NOT EXISTS user_permissions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       menu TEXT NOT NULL,
-      can_read INTEGER NOT NULL DEFAULT 1,
-      can_edit INTEGER NOT NULL DEFAULT 0,
-      can_delete INTEGER NOT NULL DEFAULT 0,
+      can_read BOOLEAN NOT NULL DEFAULT TRUE,
+      can_edit BOOLEAN NOT NULL DEFAULT FALSE,
+      can_delete BOOLEAN NOT NULL DEFAULT FALSE,
       UNIQUE(user_id, menu)
     );
 
     CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
 
-    -- Tb_Periodos: Períodos de plantão por área
     CREATE TABLE IF NOT EXISTS periodos (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       codigo TEXT NOT NULL UNIQUE,
       data TEXT NOT NULL,
       horarios TEXT NOT NULL,
       area_codigo TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (area_codigo) REFERENCES areas(codigo)
     );
 
-    -- Tb_Escalas: Escalas vinculando área + período + usuário
     CREATE TABLE IF NOT EXISTS escalas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       codigo TEXT NOT NULL UNIQUE,
       area_codigo TEXT NOT NULL,
       periodo_codigo TEXT NOT NULL,
       usuario_codigo TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
       FOREIGN KEY (area_codigo) REFERENCES areas(codigo),
       FOREIGN KEY (periodo_codigo) REFERENCES periodos(codigo),
       FOREIGN KEY (usuario_codigo) REFERENCES users(codigo)
     );
 
-    -- Escalation schedules (imported from CSV, persisted)
     CREATE TABLE IF NOT EXISTS escalation_schedules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       area TEXT NOT NULL,
       colaborador TEXT NOT NULL,
       cargo TEXT,
@@ -155,26 +155,24 @@ function createTables(db: Database.Database): void {
       horario_inicio TEXT NOT NULL,
       horario_fim TEXT NOT NULL,
       is_24h INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_escalation_area_dia ON escalation_schedules(area, ano, mes, dia);
 
-    -- Tb_User_Areas: Vinculação multi-área para Responsáveis
     CREATE TABLE IF NOT EXISTS user_areas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       area_codigo TEXT NOT NULL REFERENCES areas(codigo),
-      created_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, area_codigo)
     );
 
     CREATE INDEX IF NOT EXISTS idx_user_areas_user ON user_areas(user_id);
     CREATE INDEX IF NOT EXISTS idx_user_areas_area ON user_areas(area_codigo);
 
-    -- Tb_Area_Escalation_Chains: Cadeia de escalonamento por área
     CREATE TABLE IF NOT EXISTS area_escalation_chains (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       area_codigo TEXT NOT NULL REFERENCES areas(codigo),
       person_name TEXT NOT NULL,
       person_contact TEXT,
@@ -184,33 +182,30 @@ function createTables(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_area_esc_chain_area ON area_escalation_chains(area_codigo);
 
-    -- Tb_Monitor_Area_Mapping: Mapeamento manual de monitores para áreas
     CREATE TABLE IF NOT EXISTS monitor_area_mapping (
       monitor_id INTEGER PRIMARY KEY,
       area_codigo TEXT NOT NULL REFERENCES areas(codigo),
       monitor_name TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_monitor_area ON monitor_area_mapping(area_codigo);
 
-    -- Tb_Problemas: Cadastro de problemas
     CREATE TABLE IF NOT EXISTS problemas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       codigo TEXT NOT NULL UNIQUE,
       descricao TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
 
-    -- Tb_Problema_Areas: Áreas responsáveis por problema (com ordem de acionamento)
     CREATE TABLE IF NOT EXISTS problema_areas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       problema_id INTEGER NOT NULL REFERENCES problemas(id) ON DELETE CASCADE,
       area_codigo TEXT NOT NULL REFERENCES areas(codigo),
       ordem INTEGER NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
+      created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(problema_id, area_codigo),
       UNIQUE(problema_id, ordem)
     );
@@ -218,9 +213,8 @@ function createTables(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_problema_areas_problema ON problema_areas(problema_id);
     CREATE INDEX IF NOT EXISTS idx_problema_areas_area ON problema_areas(area_codigo);
 
-    -- Tb_Contato_Log: Registro de status de contato com plantonista
     CREATE TABLE IF NOT EXISTS contato_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       plantonista TEXT NOT NULL,
       area_codigo TEXT NOT NULL,
       problema_codigo TEXT,
@@ -229,13 +223,12 @@ function createTables(db: Database.Database): void {
       status TEXT NOT NULL CHECK(status IN ('pendente', 'atendido', 'nao_atendido')),
       registrado_por TEXT,
       observacao TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_contato_log_data ON contato_log(data);
     CREATE INDEX IF NOT EXISTS idx_contato_log_area ON contato_log(area_codigo, data);
 
-    -- Performance indexes
     CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
     CREATE INDEX IF NOT EXISTS idx_incidents_started_at ON incidents(started_at);
     CREATE INDEX IF NOT EXISTS idx_users_area ON users(area_codigo);
@@ -245,18 +238,13 @@ function createTables(db: Database.Database): void {
   `);
 }
 
-function seedTeams(db: Database.Database): void {
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO teams (id, name, display_order) VALUES (?, ?, ?)'
-  );
-
-  const seedAll = db.transaction(() => {
-    for (const team of TEAMS_SEED) {
-      insert.run(team.id, team.name, team.displayOrder);
-    }
-  });
-
-  seedAll();
+async function seedTeams(db: Pool): Promise<void> {
+  for (const team of TEAMS_SEED) {
+    await db.query(
+      'INSERT INTO teams (id, name, display_order) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+      [team.id, team.name, team.displayOrder]
+    );
+  }
 }
 
 const AREAS_SEED = [
@@ -278,18 +266,13 @@ const AREAS_SEED = [
   { codigo: 'PENDENTE_APROVACAO', nome: 'Pendente de Aprovação', torre: null },
 ];
 
-function seedAreas(db: Database.Database): void {
-  const insert = db.prepare(
-    "INSERT OR IGNORE INTO areas (codigo, nome, torre, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))"
-  );
-
-  const seedAll = db.transaction(() => {
-    for (const area of AREAS_SEED) {
-      insert.run(area.codigo, area.nome, area.torre);
-    }
-  });
-
-  seedAll();
+async function seedAreas(db: Pool): Promise<void> {
+  for (const area of AREAS_SEED) {
+    await db.query(
+      "INSERT INTO areas (codigo, nome, torre, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW()) ON CONFLICT (codigo) DO NOTHING",
+      [area.codigo, area.nome, area.torre]
+    );
+  }
 }
 
 /**
@@ -309,160 +292,57 @@ function normalizeForComparison(str: string): string {
  * a broken encoding (e.g., ◆, Ã, â€, etc. instead of proper Portuguese accents).
  */
 function hasGarbledCharacters(str: string): boolean {
-  // Common garbled characters from UTF-8 misinterpretation
-  // ◆ (U+25C6) often appears when multi-byte UTF-8 is decoded as single-byte
-  // Also check for other common mojibake patterns
   return /[◆◇■□▲△▼▽●○]/.test(str) || /[\u0080-\u009f]/.test(str);
 }
 
-/**
- * Removes duplicate areas that have garbled encoding (e.g., ◆ instead of ç/ã/õ).
- * Keeps the canonical AREAS_SEED entries and deletes CSV-imported duplicates
- * by comparing normalized forms of both the area codigo and nome fields,
- * and also removing entries with garbled characters.
- */
-function deduplicateAreas(db: Database.Database): void {
+async function deduplicateAreas(db: Pool): Promise<void> {
   const canonicalCodigos = AREAS_SEED.map((a) => a.codigo);
 
-  const dedup = db.transaction(() => {
-    // Get all areas currently in the database
-    const allAreas = db.prepare('SELECT id, codigo, nome FROM areas').all() as Array<{
-      id: number;
-      codigo: string;
-      nome: string;
-    }>;
+  const res = await db.query('SELECT id, codigo, nome FROM areas');
+  const allAreas = res.rows as Array<{ id: number; codigo: string; nome: string; }>;
 
-    // Build a set of normalized names AND normalized codigos from canonical entries
-    const canonicalNormalizedNomes = new Set<string>();
-    const canonicalNormalizedCodigos = new Set<string>();
-    for (const area of allAreas) {
-      if (canonicalCodigos.includes(area.codigo)) {
-        canonicalNormalizedNomes.add(normalizeForComparison(area.nome));
-        canonicalNormalizedCodigos.add(normalizeForComparison(area.codigo));
-      }
+  const canonicalNormalizedNomes = new Set<string>();
+  const canonicalNormalizedCodigos = new Set<string>();
+  for (const area of allAreas) {
+    if (canonicalCodigos.includes(area.codigo)) {
+      canonicalNormalizedNomes.add(normalizeForComparison(area.nome));
+      canonicalNormalizedCodigos.add(normalizeForComparison(area.codigo));
     }
+  }
 
-    // Find non-canonical areas that are duplicates:
-    // 1. Their normalized nome or codigo matches a canonical one, OR
-    // 2. They contain garbled characters (broken encoding artifacts)
-    const idsToDelete: number[] = [];
-    for (const area of allAreas) {
-      if (canonicalCodigos.includes(area.codigo)) {
-        continue; // skip canonical entries
-      }
-      const normalizedNome = normalizeForComparison(area.nome);
-      const normalizedCodigo = normalizeForComparison(area.codigo);
-
-      const matchesCanonicalNome = canonicalNormalizedNomes.has(normalizedNome);
-      const matchesCanonicalCodigo = canonicalNormalizedCodigos.has(normalizedCodigo);
-      const isGarbled = hasGarbledCharacters(area.nome);
-
-      if (matchesCanonicalNome || matchesCanonicalCodigo || isGarbled) {
-        idsToDelete.push(area.id);
-      }
+  const idsToDelete: number[] = [];
+  for (const area of allAreas) {
+    if (canonicalCodigos.includes(area.codigo)) {
+      continue;
     }
+    const normalizedNome = normalizeForComparison(area.nome);
+    const normalizedCodigo = normalizeForComparison(area.codigo);
 
-    // Delete the duplicates
-    if (idsToDelete.length > 0) {
-      const placeholders = idsToDelete.map(() => '?').join(',');
-      db.prepare(`DELETE FROM areas WHERE id IN (${placeholders})`).run(...idsToDelete);
+    const matchesCanonicalNome = canonicalNormalizedNomes.has(normalizedNome);
+    const matchesCanonicalCodigo = canonicalNormalizedCodigos.has(normalizedCodigo);
+    const isGarbled = hasGarbledCharacters(area.nome);
+
+    if (matchesCanonicalNome || matchesCanonicalCodigo || isGarbled) {
+      idsToDelete.push(area.id);
     }
-  });
+  }
 
-  dedup();
+  if (idsToDelete.length > 0) {
+    await db.query(`DELETE FROM areas WHERE id = ANY($1)`, [idsToDelete]);
+  }
 }
 
-export function initializeDatabase(dbPath?: string): Database.Database {
-  const path = dbPath || './data/command-center.db';
-
-  // Criar diretório se não existir
-  const dir = path.substring(0, path.lastIndexOf('/'));
-  if (dir) {
-    const fs = require('fs');
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+export async function initializeDatabase(db?: Pool): Promise<Pool> {
+  if (!db) {
+    db = new Pool({
+      connectionString: process.env.DATABASE_URL
+    });
   }
 
-  const db = new Database(path);
-
-  // Enable WAL mode for better concurrency
-  db.pragma('journal_mode = WAL');
-
-  // Disable foreign keys during initialization to avoid constraint issues during migrations
-  db.pragma('foreign_keys = OFF');
-
-  // Create all tables
-  createTables(db);
-
-  // Migrate: add contato column to users if it doesn't exist yet (for existing DBs)
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN contato TEXT`);
-  } catch {
-    // Column already exists — ignore
-  }
-
-  // Migrate: add nivel_escalonamento column to users
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN nivel_escalonamento TEXT`);
-  } catch { /* already exists */ }
-
-  // Migrate: add ativo column to users
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN ativo INTEGER NOT NULL DEFAULT 1`);
-  } catch { /* already exists */ }
-
-  // Migrate: add aprovado column to users (pending approval flow)
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN aprovado INTEGER NOT NULL DEFAULT 1`);
-  } catch { /* already exists */ }
-
-  // Migrate: add area_solicitada column (area requested during registration)
-  try {
-    db.exec(`ALTER TABLE users ADD COLUMN area_solicitada TEXT`);
-  } catch { /* already exists */ }
-
-  // Migrate: create user_permissions table if not exists
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS user_permissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        menu TEXT NOT NULL,
-        can_read INTEGER NOT NULL DEFAULT 1,
-        can_edit INTEGER NOT NULL DEFAULT 0,
-        can_delete INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(user_id, menu)
-      );
-      CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id);
-    `);
-  } catch { /* already exists */ }
-
-  // Migrate: add coordenador/gerente columns to areas
-  try {
-    db.exec(`ALTER TABLE areas ADD COLUMN coordenador_nome TEXT`);
-  } catch { /* already exists */ }
-  try {
-    db.exec(`ALTER TABLE areas ADD COLUMN coordenador_contato TEXT`);
-  } catch { /* already exists */ }
-  try {
-    db.exec(`ALTER TABLE areas ADD COLUMN gerente_nome TEXT`);
-  } catch { /* already exists */ }
-  try {
-    db.exec(`ALTER TABLE areas ADD COLUMN gerente_contato TEXT`);
-  } catch { /* already exists */ }
-
-  // Seed teams
-  seedTeams(db);
-
-  // Seed areas
-  seedAreas(db);
-
-  // Deduplicate areas (remove garbled CSV-imported duplicates)
-  deduplicateAreas(db);
-
-  // Re-enable foreign keys after initialization
-  db.pragma('foreign_keys = ON');
+  await createTables(db);
+  await seedTeams(db);
+  await seedAreas(db);
+  await deduplicateAreas(db);
 
   return db;
 }

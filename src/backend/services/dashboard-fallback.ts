@@ -53,12 +53,12 @@ export interface AreaFallbackResult {
  * @param areaRepo    - AreaRepository instance
  * @returns           AreaFallbackResult describing the fallback contacts found
  */
-export function resolveAreaFallback(
+export async function resolveAreaFallback(
   areaCodigo: string,
   userRepo: UserRepository,
   areaRepo: AreaRepository,
-): AreaFallbackResult {
-  const area = areaRepo.getByCodigo(areaCodigo);
+): Promise<AreaFallbackResult> {
+  const area = await areaRepo.getByCodigo(areaCodigo);
   if (!area) {
     return {
       areaCodigo,
@@ -70,7 +70,7 @@ export function resolveAreaFallback(
   }
 
   // Requirement 5.1 — look for Command users in the area itself
-  const areaUsers = userRepo.getByArea(areaCodigo);
+  const areaUsers = await userRepo.getByArea(areaCodigo);
   const commandUsersInArea = areaUsers.filter(u => u.perfil === 'Plantonista');
 
   if (commandUsersInArea.length > 0) {
@@ -85,12 +85,12 @@ export function resolveAreaFallback(
 
   // Requirement 5.2 — widen to the torre if the area has one
   if (area.torre) {
-    const allAreas = areaRepo.getAll();
+    const allAreas = await areaRepo.getAll();
     const torreAreas = allAreas.filter(a => a.torre === area.torre);
 
     const torreContacts: FallbackContact[] = [];
     for (const torreArea of torreAreas) {
-      const users = userRepo.getByArea(torreArea.codigo);
+      const users = await userRepo.getByArea(torreArea.codigo);
       const commandUsers = users.filter(u => u.perfil === 'Plantonista');
       for (const u of commandUsers) {
         torreContacts.push(toFallbackContact(u, torreArea));

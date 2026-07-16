@@ -1,19 +1,18 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { IncidentRecord, EscalationEvent, HistoryFilters } from '../../../shared/types';
 
 export class IncidentRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  create(incident: Omit<IncidentRecord, 'acknowledgedAt' | 'acknowledgedBy' | 'resolvedAt' | 'resolvedBy'>): void {
-    const stmt = this.db.prepare(`
+  async create(incident: Omit<IncidentRecord, 'acknowledgedAt' | 'acknowledgedBy' | 'resolvedAt' | 'resolvedBy'>): Promise<void> {
+    await this.db.query(`
       INSERT INTO incidents (id, monitor_id, monitor_name, team_id, on_call_person, status, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [
       incident.id,
       incident.monitorId,
       incident.monitorName,
@@ -21,76 +20,73 @@ export class IncidentRepository {
       incident.onCallPerson,
       incident.status,
       incident.startedAt.toISOString()
-    );
+    ]);
   }
 
-  getById(id: string): IncidentRecord | undefined {
-    const stmt = this.db.prepare(`
+  async getById(id: string): Promise<IncidentRecord | undefined> {
+    const res = await this.db.query(`
       SELECT id, monitor_id, monitor_name, team_id, on_call_person, status,
              started_at, acknowledged_at, acknowledged_by, resolved_at, resolved_by
       FROM incidents
-      WHERE id = ?
-    `);
-    const row = stmt.get(id) as any;
+      WHERE id = $1
+    `, [id]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapIncidentRow(row);
   }
 
-  getActive(): IncidentRecord[] {
-    const stmt = this.db.prepare(`
+  async getActive(): Promise<IncidentRecord[]> {
+    const res = await this.db.query(`
       SELECT id, monitor_id, monitor_name, team_id, on_call_person, status,
              started_at, acknowledged_at, acknowledged_by, resolved_at, resolved_by
       FROM incidents
       WHERE status IN ('active', 'acknowledged')
     `);
-    const rows = stmt.all() as any[];
-    return rows.map(this.mapIncidentRow);
+    return res.rows.map(this.mapIncidentRow);
   }
 
-  acknowledge(id: string, acknowledgedBy: string, acknowledgedAt: Date): void {
-    const stmt = this.db.prepare(`
+  async acknowledge(id: string, acknowledgedBy: string, acknowledgedAt: Date): Promise<void> {
+    await this.db.query(`
       UPDATE incidents
-      SET status = 'acknowledged', acknowledged_by = ?, acknowledged_at = ?
-      WHERE id = ?
-    `);
-    stmt.run(acknowledgedBy, acknowledgedAt.toISOString(), id);
+      SET status = 'acknowledged', acknowledged_by = $1, acknowledged_at = $2
+      WHERE id = $3
+    `, [acknowledgedBy, acknowledgedAt.toISOString(), id]);
   }
 
-  resolve(id: string, resolvedBy: string, resolvedAt: Date): void {
-    const stmt = this.db.prepare(`
+  async resolve(id: string, resolvedBy: string, resolvedAt: Date): Promise<void> {
+    await this.db.query(`
       UPDATE incidents
-      SET status = 'resolved', resolved_by = ?, resolved_at = ?
-      WHERE id = ?
-    `);
-    stmt.run(resolvedBy, resolvedAt.toISOString(), id);
+      SET status = 'resolved', resolved_by = $1, resolved_at = $2
+      WHERE id = $3
+    `, [resolvedBy, resolvedAt.toISOString(), id]);
   }
 
-  updateStatus(id: string, status: string): void {
-    const stmt = this.db.prepare('UPDATE incidents SET status = ? WHERE id = ?');
-    stmt.run(status, id);
+  async updateStatus(id: string, status: string): Promise<void> {
+    await this.db.query('UPDATE incidents SET status = $1 WHERE id = $2', [status, id]);
   }
 
-  query(filters: HistoryFilters): IncidentRecord[] {
+  async query(filters: HistoryFilters): Promise<IncidentRecord[]> {
     const conditions: string[] = [];
     const params: any[] = [];
+    let idx = 1;
 
     if (filters.teamId) {
-      conditions.push('team_id = ?');
+      conditions.push(`team_id = $${idx++}`);
       params.push(filters.teamId);
     }
 
     if (filters.startDate) {
-      conditions.push('started_at >= ?');
+      conditions.push(`started_at >= $${idx++}`);
       params.push(filters.startDate);
     }
 
     if (filters.endDate) {
-      conditions.push('started_at <= ?');
+      conditions.push(`started_at <= $${idx++}`);
       params.push(filters.endDate);
     }
 
     if (filters.status) {
-      conditions.push('status = ?');
+      conditions.push(`status = $${idx++}`);
       params.push(filters.status);
     }
 
@@ -98,40 +94,37 @@ export class IncidentRepository {
       ? `WHERE ${conditions.join(' AND ')}`
       : '';
 
-    const stmt = this.db.prepare(`
+    const res = await this.db.query(`
       SELECT id, monitor_id, monitor_name, team_id, on_call_person, status,
              started_at, acknowledged_at, acknowledged_by, resolved_at, resolved_by
       FROM incidents
       ${whereClause}
       ORDER BY started_at DESC
-    `);
+    `, params);
 
-    const rows = stmt.all(...params) as any[];
-    return rows.map(this.mapIncidentRow);
+    return res.rows.map(this.mapIncidentRow);
   }
 
-  createEscalationEvent(event: Omit<EscalationEvent, 'createdAt'>): void {
-    const stmt = this.db.prepare(`
+  async createEscalationEvent(event: Omit<EscalationEvent, 'createdAt'>): Promise<void> {
+    await this.db.query(`
       INSERT INTO escalation_events (incident_id, from_person, to_person, escalation_level, created_at)
-      VALUES (?, ?, ?, ?, datetime('now'))
-    `);
-    stmt.run(
+      VALUES ($1, $2, $3, $4, NOW())
+    `, [
       event.incidentId,
       event.fromPerson,
       event.toPerson,
       event.escalationLevel
-    );
+    ]);
   }
 
-  getEscalationEvents(incidentId: string): EscalationEvent[] {
-    const stmt = this.db.prepare(`
+  async getEscalationEvents(incidentId: string): Promise<EscalationEvent[]> {
+    const res = await this.db.query(`
       SELECT incident_id, from_person, to_person, escalation_level, created_at
       FROM escalation_events
-      WHERE incident_id = ?
+      WHERE incident_id = $1
       ORDER BY escalation_level ASC
-    `);
-    const rows = stmt.all(incidentId) as any[];
-    return rows.map(this.mapEscalationRow);
+    `, [incidentId]);
+    return res.rows.map(this.mapEscalationRow);
   }
 
   private mapIncidentRow(row: any): IncidentRecord {

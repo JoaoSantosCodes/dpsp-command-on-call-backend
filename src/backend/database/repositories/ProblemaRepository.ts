@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 
 export interface Problema {
   id: number;
@@ -21,101 +21,102 @@ export interface ProblemaWithAreas extends Problema {
 }
 
 export class ProblemaRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  create(data: { codigo: string; descricao: string }): Problema {
-    const stmt = this.db.prepare(`
+  async create(data: { codigo: string; descricao: string }): Promise<Problema> {
+    const res = await this.db.query(`
       INSERT INTO problemas (codigo, descricao, created_at, updated_at)
-      VALUES (?, ?, datetime('now'), datetime('now'))
-    `);
-    const result = stmt.run(data.codigo, data.descricao);
-    return this.getById(Number(result.lastInsertRowid))!;
+      VALUES ($1, $2, NOW(), NOW())
+      RETURNING id
+    `, [data.codigo, data.descricao]);
+    return (await this.getById(Number(res.rows[0].id)))!;
   }
 
-  getById(id: number): Problema | undefined {
-    const stmt = this.db.prepare(`
+  async getById(id: number): Promise<Problema | undefined> {
+    const res = await this.db.query(`
       SELECT id, codigo, descricao, created_at, updated_at
-      FROM problemas WHERE id = ?
-    `);
-    const row = stmt.get(id) as any;
+      FROM problemas WHERE id = $1
+    `, [id]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  getByCodigo(codigo: string): Problema | undefined {
-    const stmt = this.db.prepare(`
+  async getByCodigo(codigo: string): Promise<Problema | undefined> {
+    const res = await this.db.query(`
       SELECT id, codigo, descricao, created_at, updated_at
-      FROM problemas WHERE codigo = ?
-    `);
-    const row = stmt.get(codigo) as any;
+      FROM problemas WHERE codigo = $1
+    `, [codigo]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  getAll(): Problema[] {
-    const stmt = this.db.prepare(`
+  async getAll(): Promise<Problema[]> {
+    const res = await this.db.query(`
       SELECT id, codigo, descricao, created_at, updated_at
       FROM problemas ORDER BY codigo ASC
     `);
-    const rows = stmt.all() as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  getAllWithAreas(): ProblemaWithAreas[] {
-    const problemas = this.getAll();
-    return problemas.map((p) => ({
-      ...p,
-      areas: this.getAreas(p.id),
-    }));
+  async getAllWithAreas(): Promise<ProblemaWithAreas[]> {
+    const problemas = await this.getAll();
+    const result: ProblemaWithAreas[] = [];
+    for (const p of problemas) {
+      result.push({
+        ...p,
+        areas: await this.getAreas(p.id),
+      });
+    }
+    return result;
   }
 
-  update(id: number, data: { codigo?: string; descricao?: string }): Problema | undefined {
+  async update(id: number, data: { codigo?: string; descricao?: string }): Promise<Problema | undefined> {
     const fields: string[] = [];
     const values: any[] = [];
+    let idx = 1;
 
-    if (data.codigo !== undefined) { fields.push('codigo = ?'); values.push(data.codigo); }
-    if (data.descricao !== undefined) { fields.push('descricao = ?'); values.push(data.descricao); }
+    if (data.codigo !== undefined) { fields.push(`codigo = $${idx++}`); values.push(data.codigo); }
+    if (data.descricao !== undefined) { fields.push(`descricao = $${idx++}`); values.push(data.descricao); }
 
     if (fields.length === 0) return this.getById(id);
 
-    fields.push("updated_at = datetime('now')");
+    fields.push("updated_at = NOW()");
     values.push(id);
 
-    const stmt = this.db.prepare(`UPDATE problemas SET ${fields.join(', ')} WHERE id = ?`);
-    stmt.run(...values);
+    await this.db.query(`UPDATE problemas SET ${fields.join(', ')} WHERE id = $${idx}`, values);
     return this.getById(id);
   }
 
-  delete(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM problemas WHERE id = ?');
-    const result = stmt.run(id);
-    return result.changes > 0;
+  async delete(id: number): Promise<boolean> {
+    const res = await this.db.query('DELETE FROM problemas WHERE id = $1', [id]);
+    return (res.rowCount || 0) > 0;
   }
 
   // === Problema Areas (grid) ===
 
-  getAreas(problemaId: number): ProblemaArea[] {
-    const stmt = this.db.prepare(`
+  async getAreas(problemaId: number): Promise<ProblemaArea[]> {
+    const res = await this.db.query(`
       SELECT id, problema_id, area_codigo, ordem, created_at
-      FROM problema_areas WHERE problema_id = ?
+      FROM problema_areas WHERE problema_id = $1
       ORDER BY ordem ASC
-    `);
-    const rows = stmt.all(problemaId) as any[];
-    return rows.map(this.mapAreaRow);
+    `, [problemaId]);
+    return res.rows.map(this.mapAreaRow);
   }
 
-  addArea(problemaId: number, areaCodigo: string, ordem: number): ProblemaArea {
-    const stmt = this.db.prepare(`
+  async addArea(problemaId: number, areaCodigo: string, ordem: number): Promise<ProblemaArea> {
+    const res = await this.db.query(`
       INSERT INTO problema_areas (problema_id, area_codigo, ordem, created_at)
-      VALUES (?, ?, ?, datetime('now'))
-    `);
-    const result = stmt.run(problemaId, areaCodigo, ordem);
+      VALUES ($1, $2, $3, NOW())
+      RETURNING id
+    `, [problemaId, areaCodigo, ordem]);
     return {
-      id: Number(result.lastInsertRowid),
+      id: Number(res.rows[0].id),
       problemaId,
       areaCodigo,
       ordem,
@@ -123,29 +124,32 @@ export class ProblemaRepository {
     };
   }
 
-  removeArea(problemaId: number, areaCodigo: string): boolean {
-    const stmt = this.db.prepare(
-      'DELETE FROM problema_areas WHERE problema_id = ? AND area_codigo = ?'
+  async removeArea(problemaId: number, areaCodigo: string): Promise<boolean> {
+    const res = await this.db.query(
+      'DELETE FROM problema_areas WHERE problema_id = $1 AND area_codigo = $2',
+      [problemaId, areaCodigo]
     );
-    const result = stmt.run(problemaId, areaCodigo);
-    return result.changes > 0;
+    return (res.rowCount || 0) > 0;
   }
 
-  replaceAreas(problemaId: number, areas: Array<{ areaCodigo: string; ordem: number }>): void {
-    const deletStmt = this.db.prepare('DELETE FROM problema_areas WHERE problema_id = ?');
-    const insertStmt = this.db.prepare(`
-      INSERT INTO problema_areas (problema_id, area_codigo, ordem, created_at)
-      VALUES (?, ?, ?, datetime('now'))
-    `);
-
-    const replaceAll = this.db.transaction((items: Array<{ areaCodigo: string; ordem: number }>) => {
-      deletStmt.run(problemaId);
-      for (const item of items) {
-        insertStmt.run(problemaId, item.areaCodigo, item.ordem);
+  async replaceAreas(problemaId: number, areas: Array<{ areaCodigo: string; ordem: number }>): Promise<void> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM problema_areas WHERE problema_id = $1', [problemaId]);
+      for (const item of areas) {
+        await client.query(`
+          INSERT INTO problema_areas (problema_id, area_codigo, ordem, created_at)
+          VALUES ($1, $2, $3, NOW())
+        `, [problemaId, item.areaCodigo, item.ordem]);
       }
-    });
-
-    replaceAll(areas);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   private mapRow(row: any): Problema {

@@ -1,109 +1,104 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 import { Escala } from '../../../shared/types';
 
 export class EscalaRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  create(escala: Omit<Escala, 'id' | 'createdAt' | 'updatedAt'>): Escala {
-    const stmt = this.db.prepare(`
+  async create(escala: Omit<Escala, 'id' | 'createdAt' | 'updatedAt'>): Promise<Escala> {
+    const res = await this.db.query(`
       INSERT INTO escalas (codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at)
-      VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-    `);
-    const result = stmt.run(
+      VALUES ($1, $2, $3, $4, NOW(), NOW())
+      RETURNING id
+    `, [
       escala.codigo,
       escala.areaCodigo,
       escala.periodoCodigo,
       escala.usuarioCodigo
-    );
-    return this.getById(Number(result.lastInsertRowid))!;
+    ]);
+    return (await this.getById(Number(res.rows[0].id)))!;
   }
 
-  getById(id: number): Escala | undefined {
-    const stmt = this.db.prepare(`
+  async getById(id: number): Promise<Escala | undefined> {
+    const res = await this.db.query(`
       SELECT id, codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at
-      FROM escalas WHERE id = ?
-    `);
-    const row = stmt.get(id) as any;
+      FROM escalas WHERE id = $1
+    `, [id]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  getByCodigo(codigo: string): Escala | undefined {
-    const stmt = this.db.prepare(`
+  async getByCodigo(codigo: string): Promise<Escala | undefined> {
+    const res = await this.db.query(`
       SELECT id, codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at
-      FROM escalas WHERE codigo = ?
-    `);
-    const row = stmt.get(codigo) as any;
+      FROM escalas WHERE codigo = $1
+    `, [codigo]);
+    const row = res.rows[0];
     if (!row) return undefined;
     return this.mapRow(row);
   }
 
-  getByArea(areaCodigo: string): Escala[] {
-    const stmt = this.db.prepare(`
+  async getByArea(areaCodigo: string): Promise<Escala[]> {
+    const res = await this.db.query(`
       SELECT id, codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at
-      FROM escalas WHERE area_codigo = ?
+      FROM escalas WHERE area_codigo = $1
       ORDER BY created_at ASC
-    `);
-    const rows = stmt.all(areaCodigo) as any[];
-    return rows.map(this.mapRow);
+    `, [areaCodigo]);
+    return res.rows.map(this.mapRow);
   }
 
-  getByPeriodo(periodoCodigo: string): Escala[] {
-    const stmt = this.db.prepare(`
+  async getByPeriodo(periodoCodigo: string): Promise<Escala[]> {
+    const res = await this.db.query(`
       SELECT id, codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at
-      FROM escalas WHERE periodo_codigo = ?
+      FROM escalas WHERE periodo_codigo = $1
       ORDER BY created_at ASC
-    `);
-    const rows = stmt.all(periodoCodigo) as any[];
-    return rows.map(this.mapRow);
+    `, [periodoCodigo]);
+    return res.rows.map(this.mapRow);
   }
 
-  getByUsuario(usuarioCodigo: string): Escala[] {
-    const stmt = this.db.prepare(`
+  async getByUsuario(usuarioCodigo: string): Promise<Escala[]> {
+    const res = await this.db.query(`
       SELECT id, codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at
-      FROM escalas WHERE usuario_codigo = ?
+      FROM escalas WHERE usuario_codigo = $1
       ORDER BY created_at ASC
-    `);
-    const rows = stmt.all(usuarioCodigo) as any[];
-    return rows.map(this.mapRow);
+    `, [usuarioCodigo]);
+    return res.rows.map(this.mapRow);
   }
 
-  getAll(): Escala[] {
-    const stmt = this.db.prepare(`
+  async getAll(): Promise<Escala[]> {
+    const res = await this.db.query(`
       SELECT id, codigo, area_codigo, periodo_codigo, usuario_codigo, created_at, updated_at
       FROM escalas ORDER BY created_at ASC
     `);
-    const rows = stmt.all() as any[];
-    return rows.map(this.mapRow);
+    return res.rows.map(this.mapRow);
   }
 
-  update(id: number, data: Partial<Omit<Escala, 'id' | 'createdAt' | 'updatedAt'>>): Escala | undefined {
+  async update(id: number, data: Partial<Omit<Escala, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Escala | undefined> {
     const fields: string[] = [];
     const values: any[] = [];
+    let idx = 1;
 
-    if (data.codigo !== undefined) { fields.push('codigo = ?'); values.push(data.codigo); }
-    if (data.areaCodigo !== undefined) { fields.push('area_codigo = ?'); values.push(data.areaCodigo); }
-    if (data.periodoCodigo !== undefined) { fields.push('periodo_codigo = ?'); values.push(data.periodoCodigo); }
-    if (data.usuarioCodigo !== undefined) { fields.push('usuario_codigo = ?'); values.push(data.usuarioCodigo); }
+    if (data.codigo !== undefined) { fields.push(`codigo = $${idx++}`); values.push(data.codigo); }
+    if (data.areaCodigo !== undefined) { fields.push(`area_codigo = $${idx++}`); values.push(data.areaCodigo); }
+    if (data.periodoCodigo !== undefined) { fields.push(`periodo_codigo = $${idx++}`); values.push(data.periodoCodigo); }
+    if (data.usuarioCodigo !== undefined) { fields.push(`usuario_codigo = $${idx++}`); values.push(data.usuarioCodigo); }
 
     if (fields.length === 0) return this.getById(id);
 
-    fields.push("updated_at = datetime('now')");
+    fields.push("updated_at = NOW()");
     values.push(id);
 
-    const stmt = this.db.prepare(`UPDATE escalas SET ${fields.join(', ')} WHERE id = ?`);
-    stmt.run(...values);
+    await this.db.query(`UPDATE escalas SET ${fields.join(', ')} WHERE id = $${idx}`, values);
     return this.getById(id);
   }
 
-  delete(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM escalas WHERE id = ?');
-    const result = stmt.run(id);
-    return result.changes > 0;
+  async delete(id: number): Promise<boolean> {
+    const res = await this.db.query('DELETE FROM escalas WHERE id = $1', [id]);
+    return (res.rowCount || 0) > 0;
   }
 
   private mapRow(row: any): Escala {

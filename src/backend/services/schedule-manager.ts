@@ -17,13 +17,13 @@ export class ScheduleManager {
     this.getNow = getNow || (() => new Date());
   }
 
-  getCurrentOnCall(teamId: string): OnCallPerson | null {
+  async getCurrentOnCall(teamId: string): Promise<OnCallPerson | null> {
     const now = this.getNow();
 
     const date = this.formatDate(now);
     const time = this.formatTime(now);
 
-    const entry = this.scheduleRepository.getByTeamAndDateTime(teamId, date, time);
+    const entry = await this.scheduleRepository.getByTeamAndDateTime(teamId, date, time);
 
     if (!entry) {
       return null;
@@ -35,12 +35,12 @@ export class ScheduleManager {
     };
   }
 
-  getEscalationChain(teamId: string): EscalationChainMember[] {
-    return this.escalationChainRepository.getByTeam(teamId);
+  async getEscalationChain(teamId: string): Promise<EscalationChainMember[]> {
+    return await this.escalationChainRepository.getByTeam(teamId);
   }
 
-  updateEscalationChain(teamId: string, chain: EscalationChainMember[]): void {
-    this.escalationChainRepository.replaceChain(teamId, chain);
+  async updateEscalationChain(teamId: string, chain: EscalationChainMember[]): Promise<void> {
+    await this.escalationChainRepository.replaceChain(teamId, chain);
   }
 
   private formatDate(date: Date): string {

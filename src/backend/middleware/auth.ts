@@ -124,7 +124,7 @@ export function areaFilterMiddleware(req: Request, res: Response, next: NextFunc
  * Loads linked areas from user_areas table for Responsável users.
  */
 export function createAreaFilterMiddleware(userAreaRepository: UserAreaRepository) {
-  return function (req: Request, res: Response, next: NextFunction): void {
+  return async function (req: Request, res: Response, next: NextFunction): Promise<void> {
     if (!req.user) {
       res.status(401).json({ error: 'Usuário não autenticado' });
       return;
@@ -143,7 +143,7 @@ export function createAreaFilterMiddleware(userAreaRepository: UserAreaRepositor
 
     if (perfil === 'Responsavel') {
       // Load linked areas from user_areas table
-      const linkedAreas = userAreaRepository.getAreasForUser(userId);
+      const linkedAreas = await userAreaRepository.getAreasForUser(userId);
       req.linkedAreas = linkedAreas;
 
       // If a selected area header is provided, validate it's one of their linked areas or primary area

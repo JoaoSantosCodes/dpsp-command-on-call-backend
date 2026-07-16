@@ -1,40 +1,37 @@
-import Database from 'better-sqlite3';
+import { Pool } from 'pg';
 
 export class UserAreaRepository {
-  private db: Database.Database;
+  private db: Pool;
 
-  constructor(db: Database.Database) {
+  constructor(db: Pool) {
     this.db = db;
   }
 
-  getAreasForUser(userId: number): string[] {
-    const stmt = this.db.prepare(`
-      SELECT area_codigo FROM user_areas WHERE user_id = ?
-    `);
-    const rows = stmt.all(userId) as { area_codigo: string }[];
-    return rows.map((row) => row.area_codigo);
+  async getAreasForUser(userId: number): Promise<string[]> {
+    const res = await this.db.query(`
+      SELECT area_codigo FROM user_areas WHERE user_id = $1
+    `, [userId]);
+    return res.rows.map((row) => row.area_codigo);
   }
 
-  addAreaBinding(userId: number, areaCodigo: string): void {
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO user_areas (user_id, area_codigo)
-      VALUES (?, ?)
-    `);
-    stmt.run(userId, areaCodigo);
+  async addAreaBinding(userId: number, areaCodigo: string): Promise<void> {
+    await this.db.query(`
+      INSERT INTO user_areas (user_id, area_codigo)
+      VALUES ($1, $2)
+      ON CONFLICT DO NOTHING
+    `, [userId, areaCodigo]);
   }
 
-  removeAreaBinding(userId: number, areaCodigo: string): void {
-    const stmt = this.db.prepare(`
-      DELETE FROM user_areas WHERE user_id = ? AND area_codigo = ?
-    `);
-    stmt.run(userId, areaCodigo);
+  async removeAreaBinding(userId: number, areaCodigo: string): Promise<void> {
+    await this.db.query(`
+      DELETE FROM user_areas WHERE user_id = $1 AND area_codigo = $2
+    `, [userId, areaCodigo]);
   }
 
-  getUsersForArea(areaCodigo: string): number[] {
-    const stmt = this.db.prepare(`
-      SELECT user_id FROM user_areas WHERE area_codigo = ?
-    `);
-    const rows = stmt.all(areaCodigo) as { user_id: number }[];
-    return rows.map((row) => row.user_id);
+  async getUsersForArea(areaCodigo: string): Promise<number[]> {
+    const res = await this.db.query(`
+      SELECT user_id FROM user_areas WHERE area_codigo = $1
+    `, [areaCodigo]);
+    return res.rows.map((row) => row.user_id);
   }
 }
