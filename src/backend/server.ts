@@ -64,6 +64,9 @@ const authLimiter = rateLimit({
 
 export function createServer(deps: ServerDependencies): Express {
   const app = express();
+  
+  // Confiar no proxy do Render/Vercel para que o express-rate-limit não bloqueie as requisições
+  app.set('trust proxy', 1);
 
   // CORS — permite origens configuradas
   const allowedOrigins = process.env.CORS_ORIGINS
