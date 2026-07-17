@@ -1768,9 +1768,9 @@ export function createServer(deps: ServerDependencies): Express {
 
       // GET /api/users/pending — Listar plantonistas pendentes de aprovação
       app.get('/api/users/pending', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), async (_req: Request, res: Response) => {
-        const allUsers = await userRepo.getAll();
-        const pending = allUsers.filter(u => !u.aprovado && u.ativo);
-        const result = pending.map(({ senhaHash, ...u }) => u);
+        const allUsers = await userRepository.getAll();
+        const pending = allUsers.filter((u: any) => !u.aprovado && u.ativo);
+        const result = pending.map(({ senhaHash, ...u }: any) => u);
         res.json(result);
       });
 
@@ -1786,7 +1786,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = await userRepo.getById(id);
+          const existing = await userRepository.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1802,7 +1802,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = await userRepo.getById(id);
+          const existing = await userRepository.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1823,7 +1823,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = await userRepo.getById(id);
+          const existing = await userRepository.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1930,7 +1930,7 @@ export function createServer(deps: ServerDependencies): Express {
         // GET /api/areas/:codigo/escalation-chain — Get escalation chain for an area
         app.get('/api/areas/:codigo/escalation-chain', authMiddleware, async (req: Request, res: Response) => {
           const codigo = req.params.codigo as string;
-          const area = await areaRepository.getByCodigo(codigo);
+          const area = await deps.areaRepository!.getByCodigo(codigo);
           if (!area) {
             res.status(404).json({ error: 'Área não encontrada' });
             return;
@@ -1942,7 +1942,7 @@ export function createServer(deps: ServerDependencies): Express {
         // PUT /api/areas/:codigo/escalation-chain — Save escalation chain for an area
         app.put('/api/areas/:codigo/escalation-chain', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
           const codigo = req.params.codigo as string;
-          const area = await areaRepository.getByCodigo(codigo);
+          const area = await deps.areaRepository!.getByCodigo(codigo);
           if (!area) {
             res.status(404).json({ error: 'Área não encontrada' });
             return;
@@ -1960,7 +1960,7 @@ export function createServer(deps: ServerDependencies): Express {
       // GET /api/areas/:codigo/users — Get all users in an area
       app.get('/api/areas/:codigo/users', authMiddleware, async (req: Request, res: Response) => {
         const codigo = req.params.codigo as string;
-        const area = await areaRepository.getByCodigo(codigo);
+        const area = await deps.areaRepository!.getByCodigo(codigo);
         if (!area) {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
@@ -2321,7 +2321,7 @@ export function createServer(deps: ServerDependencies): Express {
         const descricao = (row[1] || '').trim();
         if (!codigo || !descricao) continue;
 
-        const areaCols = row.slice(2, 7).map(a => a.trim()).filter(a => a);
+        const areaCols = row.slice(2, 7).map((a: string) => a.trim()).filter((a: string) => a);
         const problemaAreas = [];
         let ordem = 1;
 
