@@ -11,7 +11,7 @@ function generateTemplate() {
   // === Example sheet: DevOps / Cloud ===
   const exampleData = [
     ['DevOps / Cloud'],
-    ['Julho/2026'],
+    ['Mês/Ano: (Selecione o mês correto direto no painel do sistema)'],
     [],
     ['Colaborador', 'Cargo', 'Contato', 'Nível', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31'],
     ['Claudio Rogerio Ribeiro Lopes', 'Analista DevOps III', '14 99137-1213', '1º Escalão', '18:00-06:00', '', '', '', '', '', '', '18:00-06:00', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '18:00-06:00', '', '', ''],
@@ -29,18 +29,18 @@ function generateTemplate() {
 
   const ws1 = XLSX.utils.aoa_to_sheet(exampleData);
   ws1['!cols'] = [
-    { wch: 32 }, // Colaborador
-    { wch: 22 }, // Cargo
-    { wch: 16 }, // Contato
-    { wch: 12 }, // Nível
-    ...Array(31).fill({ wch: 12 }), // Days
+    { wch: 35 }, // Colaborador (widened)
+    { wch: 25 }, // Cargo (widened)
+    { wch: 18 }, // Contato (widened)
+    { wch: 15 }, // Nível (widened)
+    ...Array(31).fill({ wch: 13 }), // Days (widened)
   ];
   XLSX.utils.book_append_sheet(wb, ws1, 'DevOps - Cloud');
 
   // === Blank template sheet ===
   const blankData = [
     ['NOME DA ÁREA AQUI'],
-    ['Mês/Ano (ex: Agosto/2026)'],
+    ['Mês/Ano: (Selecione o mês correto direto no painel do sistema antes de importar)'],
     [],
     ['Colaborador', 'Cargo', 'Contato', 'Nível', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31'],
     ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
@@ -51,7 +51,7 @@ function generateTemplate() {
   ];
 
   const ws2 = XLSX.utils.aoa_to_sheet(blankData);
-  ws2['!cols'] = [{ wch: 32 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, ...Array(31).fill({ wch: 12 })];
+  ws2['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 18 }, { wch: 15 }, ...Array(31).fill({ wch: 13 })];
   XLSX.utils.book_append_sheet(wb, ws2, 'Template Vazio');
 
   // === Instructions ===
@@ -60,12 +60,12 @@ function generateTemplate() {
     [],
     ['ESTRUTURA DO ARQUIVO:'],
     ['• Cada aba do Excel = uma área/departamento'],
-    ['• O nome da aba identifica a área (ex: "DevOps - Cloud", "PDV", "Redes")'],
+    ['• O nome da aba identifica a área no sistema (ex: "DevOps", "PDV", "Redes")'],
     [],
     ['ESTRUTURA DA ABA:'],
-    ['• Linha 1: Nome da área (será usado para identificar no sistema)'],
-    ['• Linha 2: Mês/Ano de referência (ex: "Julho/2026", "Agosto/2026")'],
-    ['• Linha 3: Vazia (separador)'],
+    ['• Linha 1: Nome da área (importante para identificação)'],
+    ['• Linha 2: Informativa (O Mês e Ano reais agora são selecionados na tela do sistema antes de importar!)'],
+    ['• Linha 3: Vazia (apenas para separação visual)'],
     ['• Linha 4: Cabeçalhos — Colaborador | Cargo | Contato | Nível | 01 | 02 | ... | 31'],
     ['• Linhas 5+: Dados dos plantonistas'],
     [],
@@ -76,31 +76,20 @@ function generateTemplate() {
     ['• Nível — "1º Escalão", "2º Escalão", "3º Escalão", "4º Escalão" ou "Direto"'],
     [],
     ['COLUNAS DE DIAS (01 a 31):'],
-    ['• Preencher com o horário do sobreaviso naquele dia'],
-    ['• Formatos aceitos:'],
-    ['    - "18:00-06:00" (horário início - horário fim)'],
-    ['    - "18:00 às 06:00" (com "às")'],
-    ['    - "08:00-08:00" (turno de 24h)'],
-    ['    - "24hs" ou "24h" (turno integral)'],
-    ['    - "X" ou "S" (marca presença como 24h)'],
-    ['    - Vazio = sem plantão nesse dia'],
+    ['• Preencha com o horário do sobreaviso naquele dia'],
+    ['• Formatos recomendados:'],
+    ['    - "18:00-06:00" (horário de início e fim separados por hífen)'],
+    ['    - "24hs" ou "X" (para sinalizar um plantão de dia inteiro)'],
+    ['    - Deixe VAZIO se não houver plantão no dia'],
     [],
-    ['REGRAS DE IMPORTAÇÃO:'],
-    ['• A importação SUBSTITUI toda a escala do mês para a área'],
-    ['• Plantonistas novos são criados automaticamente (senha padrão: plantonista123)'],
-    ['• Plantonistas existentes são atualizados (cargo, contato)'],
-    ['• Conflitos são detectados (mesmo plantonista em dois turnos sobrepostos)'],
-    ['• Níveis 2º, 3º, 4º não precisam ter dias preenchidos (são escalação fixa)'],
+    ['DICAS E REGRAS DA IMPORTAÇÃO:'],
+    ['• SELECIONE O MÊS/ANO NO SISTEMA: A planilha será importada para o mês que você selecionar na tela de Importação.'],
+    ['• A importação substitui toda a escala do mês selecionado para aquela área.'],
+    ['• Plantonistas novos que não existiam no sistema serão criados automaticamente.'],
+    ['• Não proteja a planilha com senha, senão o sistema não conseguirá ler os dados.'],
+    ['• Múltiplas áreas podem ser importadas juntas, basta criar várias abas no mesmo arquivo Excel.'],
     [],
-    ['MÚLTIPLAS ÁREAS:'],
-    ['• Crie uma aba para cada área no mesmo arquivo'],
-    ['• Ou envie arquivos separados por área'],
-    [],
-    ['DICAS:'],
-    ['• Não use proteção por senha no arquivo'],
-    ['• Aceita formatos .xlsx e .csv'],
-    ['• O sistema valida os dados antes de importar'],
-    ['• Veja a aba "DevOps - Cloud" como exemplo preenchido'],
+    ['👉 Veja a aba "DevOps - Cloud" neste arquivo como um exemplo prático já preenchido!'],
   ];
 
   const ws3 = XLSX.utils.aoa_to_sheet(instrData);

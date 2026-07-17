@@ -494,6 +494,14 @@ export function createServer(deps: ServerDependencies): Express {
       return;
     }
 
+    const now = new Date();
+    const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+    const brasiliaDate = new Date(brasiliaStr);
+    
+    // Get month/year from request body, fallback to current date
+    const importMonth = req.body.mes ? parseInt(req.body.mes, 10) : brasiliaDate.getMonth() + 1;
+    const importYear = req.body.ano ? parseInt(req.body.ano, 10) : brasiliaDate.getFullYear();
+
     let csvContent: string;
     const buffer = req.file.buffer;
     const fileName = (req.file.originalname || '').toLowerCase();
@@ -534,18 +542,12 @@ export function createServer(deps: ServerDependencies): Express {
 
             // Persist to database
             if (deps.db) {
-              const now = new Date();
-              const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
-              const brasiliaDate = new Date(brasiliaStr);
-              const currentMonth = brasiliaDate.getMonth() + 1;
-              const currentYear = brasiliaDate.getFullYear();
-
               await deps.db.query('BEGIN');
               try {
-                await deps.db.query('DELETE FROM escalation_schedules WHERE mes = $1 AND ano = $2', [currentMonth, currentYear]);
+                await deps.db.query('DELETE FROM escalation_schedules WHERE mes = $1 AND ano = $2', [importMonth, importYear]);
                 const insertSql = 'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)';
                 for (const entry of resultData.entries) {
-                  await deps.db.query(insertSql, [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]);
+                  await deps.db.query(insertSql, [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, importMonth, importYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]);
                 }
                 await deps.db.query('COMMIT');
               } catch (e) {
@@ -619,12 +621,6 @@ export function createServer(deps: ServerDependencies): Express {
               const areaRepo = deps.areaRepository;
               const userRepo = deps.userRepository;
 
-              const now = new Date();
-              const brasiliaStr2 = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
-              const brasiliaDate2 = new Date(brasiliaStr2);
-              const importMonth = brasiliaDate2.getMonth() + 1;
-              const importYear = brasiliaDate2.getFullYear();
-
               for (const entry of resultData.entries) {
                 const allAreas = await areaRepo.getAll();
                 const areaNorm = normalizeForComparison(entry.area);
@@ -684,18 +680,12 @@ export function createServer(deps: ServerDependencies): Express {
             escalationEntries = combinedResult.entries;
 
             if (deps.db) {
-              const now = new Date();
-              const brasiliaStr = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
-              const brasiliaDate = new Date(brasiliaStr);
-              const currentMonth = brasiliaDate.getMonth() + 1;
-              const currentYear = brasiliaDate.getFullYear();
-
               await deps.db.query('BEGIN');
               try {
-                await deps.db.query('DELETE FROM escalation_schedules WHERE mes = $1 AND ano = $2', [currentMonth, currentYear]);
+                await deps.db.query('DELETE FROM escalation_schedules WHERE mes = $1 AND ano = $2', [importMonth, importYear]);
                 const insertSql = 'INSERT INTO escalation_schedules (area, colaborador, cargo, nivel, contato, dia, mes, ano, horario_inicio, horario_fim, is_24h) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)';
                 for (const entry of combinedResult.entries) {
-                  await deps.db.query(insertSql, [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, currentMonth, currentYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]);
+                  await deps.db.query(insertSql, [entry.area, entry.colaborador, entry.cargo, entry.nivel, entry.contato, entry.dia, importMonth, importYear, entry.horarioInicio, entry.horarioFim, entry.is24h ? 1 : 0]);
                 }
                 await deps.db.query('COMMIT');
               } catch (e) {
@@ -769,11 +759,6 @@ export function createServer(deps: ServerDependencies): Express {
               const areaRepo = deps.areaRepository;
               const userRepo = deps.userRepository;
 
-              const now = new Date();
-              const brasiliaStr2 = now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
-              const brasiliaDate2 = new Date(brasiliaStr2);
-              const importMonth = brasiliaDate2.getMonth() + 1;
-              const importYear = brasiliaDate2.getFullYear();
 
               for (const entry of combinedResult.entries) {
                 const allAreas = await areaRepo.getAll();
@@ -1780,7 +1765,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // GET /api/users/pending — Listar plantonistas pendentes de aprovação
       app.get('/api/users/pending', authMiddleware, roleMiddleware(['Adm', 'Responsavel']), async (_req: Request, res: Response) => {
-        const allUsers = await userRepository.getAll();
+        const allUsers = await userRepo.getAll();
         const pending = allUsers.filter(u => !u.aprovado && u.ativo);
         const result = pending.map(({ senhaHash, ...u }) => u);
         res.json(result);
@@ -1798,7 +1783,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = await userRepository.getById(id);
+          const existing = await userRepo.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1814,7 +1799,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = await userRepository.getById(id);
+          const existing = await userRepo.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1835,7 +1820,7 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(400).json({ error: 'ID inválido' });
             return;
           }
-          const existing = await userRepository.getById(id);
+          const existing = await userRepo.getById(id);
           if (!existing) {
             res.status(404).json({ error: 'Usuário não encontrado' });
             return;
@@ -1850,12 +1835,12 @@ export function createServer(deps: ServerDependencies): Express {
     // === Area CRUD Routes ===
 
     if (deps.areaRepository) {
-      const areaRepository = deps.areaRepository;
+      const areaRepo = deps.areaRepository;
 
       // GET /api/areas — Listar áreas cadastradas
       app.get('/api/areas', authMiddleware, dbAreaFilterMiddleware, async (req: Request, res: Response) => {
         const effectiveAreas = getEffectiveAreas(req);
-        let areas = await areaRepository.getAll();
+        let areas = await areaRepo.getAll();
         if (effectiveAreas !== null) {
           areas = areas.filter(a => effectiveAreas.includes(a.codigo));
         }
@@ -1869,7 +1854,16 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(400).json({ error: 'codigo e nome são obrigatórios' });
           return;
         }
-        const area = await areaRepository.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
+        const allAreas = await areaRepo.getAll();
+        if (allAreas.find(a => a.codigo.toLowerCase() === codigo.toLowerCase())) {
+           res.status(400).json({ error: 'Já existe uma Área cadastrada com este Código.' });
+           return;
+        }
+        if (allAreas.find(a => a.nome.toLowerCase() === nome.toLowerCase())) {
+           res.status(400).json({ error: 'Já existe uma Área cadastrada com este Nome.' });
+           return;
+        }
+        const area = await areaRepo.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
         res.status(201).json(area);
       });
 
@@ -1880,13 +1874,24 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = await areaRepository.getById(id);
+        const existing = await areaRepo.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
         const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
-        const updated = await areaRepository.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
+        const allAreas = await areaRepo.getAll();
+        
+        if (codigo && codigo.toLowerCase() !== existing.codigo.toLowerCase() && allAreas.find(a => a.codigo.toLowerCase() === codigo.toLowerCase())) {
+           res.status(400).json({ error: 'Já existe uma Área cadastrada com este Código.' });
+           return;
+        }
+        if (nome && nome.toLowerCase() !== existing.nome.toLowerCase() && allAreas.find(a => a.nome.toLowerCase() === nome.toLowerCase())) {
+           res.status(400).json({ error: 'Já existe uma Área cadastrada com este Nome.' });
+           return;
+        }
+
+        const updated = await areaRepo.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
         res.json(updated);
       });
 
@@ -1897,13 +1902,21 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = await areaRepository.getById(id);
+        const existing = await areaRepo.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
-        await areaRepository.delete(id);
-        res.json({ success: true });
+        try {
+          await areaRepo.delete(id);
+          res.status(204).send();
+        } catch (err: any) {
+          if (err.code === '23503') {
+             res.status(400).json({ error: 'Não é possível excluir esta Área pois ela possui usuários, escalas, horários ou incidentes vinculados a ela no sistema.' });
+             return;
+          }
+          res.status(500).json({ error: 'Erro interno ao deletar área.' });
+        }
       });
 
       // === Area Escalation Chain Routes ===
@@ -2052,7 +2065,7 @@ export function createServer(deps: ServerDependencies): Express {
       });
 
       // GET /api/periodos — Listar períodos (opcionalmente por área, filtrado por perfil)
-      app.get('/api/periodos', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
+      app.get('/api/periodos', authMiddleware, dbAreaFilterMiddleware, async (req: Request, res: Response) => {
         const areaCodigo = req.query.areaCodigo as string | undefined;
         const effectiveAreas = getEffectiveAreas(req);
 
@@ -2062,62 +2075,80 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
             return;
           }
-          const periodos = periodoRepository.getByArea(areaCodigo);
+          const periodos = await periodoRepository.getByArea(areaCodigo);
           res.json(periodos);
         } else if (effectiveAreas !== null) {
           // Non-admin users or Responsável get filtered by their areas
-          const allPeriodos = effectiveAreas.flatMap(area => periodoRepository.getByArea(area));
+          const promises = effectiveAreas.map(area => periodoRepository.getByArea(area));
+          const allPeriodos = (await Promise.all(promises)).flat();
           res.json(allPeriodos);
         } else {
-          const periodos = periodoRepository.getAll();
+          const periodos = await periodoRepository.getAll();
           res.json(periodos);
         }
       });
 
       // POST /api/periodos — Criar período
-      app.post('/api/periodos', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.post('/api/periodos', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const { codigo, data, horarios, areaCodigo } = req.body || {};
         if (!data || !horarios || !areaCodigo) {
           res.status(400).json({ error: 'data, horarios e areaCodigo são obrigatórios' });
           return;
         }
+
+        // CHECK 4: Trava de Horário (Período)
+        const areaPeriodos = await periodoRepository.getByArea(areaCodigo);
+        const duplicatedPeriodo = areaPeriodos.find(p => p.data === data && p.horarios === horarios);
+        if (duplicatedPeriodo) {
+          res.status(400).json({ error: 'Já existe um cadastro com este mesmo horário e data para esta área.' });
+          return;
+        }
+
         // Auto-generate code if not provided (backwards compatible)
-        const finalCodigo = codigo || periodoRepository.generateCode(areaCodigo, data);
-        const periodo = periodoRepository.create({ codigo: finalCodigo, data, horarios, areaCodigo });
+        const finalCodigo = codigo || await periodoRepository.generateCode(areaCodigo, data);
+        const periodo = await periodoRepository.create({ codigo: finalCodigo, data, horarios, areaCodigo });
         res.status(201).json(periodo);
       });
 
       // PUT /api/periodos/:id — Editar período
-      app.put('/api/periodos/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.put('/api/periodos/:id', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = periodoRepository.getById(id);
+        const existing = await periodoRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Período não encontrado' });
           return;
         }
         const { codigo, data, horarios, areaCodigo } = req.body || {};
-        const updated = periodoRepository.update(id, { codigo, data, horarios, areaCodigo });
+        const updated = await periodoRepository.update(id, { codigo, data, horarios, areaCodigo });
         res.json(updated);
       });
 
       // DELETE /api/periodos/:id — Deletar período
-      app.delete('/api/periodos/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.delete('/api/periodos/:id', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = periodoRepository.getById(id);
+        const existing = await periodoRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Período não encontrado' });
           return;
         }
-        periodoRepository.deleteById(id);
-        res.status(204).send();
+        try {
+           await periodoRepository.deleteById(id);
+           res.status(204).send();
+        } catch (err: any) {
+           if (err.code === '23503') {
+              res.status(400).json({ error: 'Não é possível excluir este Horário pois já existem escalas vinculadas a ele.' });
+              return;
+           }
+           res.status(500).json({ error: 'Erro interno ao deletar período.' });
+        }
       });
     }
 
@@ -2127,7 +2158,7 @@ export function createServer(deps: ServerDependencies): Express {
       const escalaRepository = deps.escalaRepository;
 
       // GET /api/escalas — Listar escalas (opcionalmente por área, filtrado por perfil)
-      app.get('/api/escalas', authMiddleware, dbAreaFilterMiddleware, (req: Request, res: Response) => {
+      app.get('/api/escalas', authMiddleware, dbAreaFilterMiddleware, async (req: Request, res: Response) => {
         const areaCodigo = req.query.areaCodigo as string | undefined;
         const effectiveAreas = getEffectiveAreas(req);
 
@@ -2137,59 +2168,77 @@ export function createServer(deps: ServerDependencies): Express {
             res.status(403).json({ error: 'Acesso restrito à sua área de responsabilidade' });
             return;
           }
-          const escalas = escalaRepository.getByArea(areaCodigo);
+          const escalas = await escalaRepository.getByArea(areaCodigo);
           res.json(escalas);
         } else if (effectiveAreas !== null) {
           // Non-admin users or Responsável get filtered by their areas
-          const allEscalas = effectiveAreas.flatMap(area => escalaRepository.getByArea(area));
+          const promises = effectiveAreas.map(area => escalaRepository.getByArea(area));
+          const allEscalas = (await Promise.all(promises)).flat();
           res.json(allEscalas);
         } else {
-          const escalas = escalaRepository.getAll();
+          const escalas = await escalaRepository.getAll();
           res.json(escalas);
         }
       });
 
       // POST /api/escalas — Criar escala (vincular área + período + plantonista)
-      app.post('/api/escalas', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.post('/api/escalas', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const { codigo, areaCodigo, periodoCodigo, usuarioCodigo } = req.body || {};
         if (!codigo || !areaCodigo || !periodoCodigo || !usuarioCodigo) {
           res.status(400).json({ error: 'codigo, areaCodigo, periodoCodigo e usuarioCodigo são obrigatórios' });
           return;
         }
-        const escala = escalaRepository.create({ codigo, areaCodigo, periodoCodigo, usuarioCodigo });
+
+        const allEscalas = await escalaRepository.getAll();
+        
+        // CHECK 2: Trava de Área (Escala)
+        const conflitoArea = allEscalas.find(e => e.areaCodigo === areaCodigo && e.periodoCodigo === periodoCodigo);
+        if (conflitoArea) {
+           res.status(400).json({ error: 'Já existe um plantonista cobrindo esta área neste horário.' });
+           return;
+        }
+
+        // CHECK 1: Trava de Plantonista (Escala)
+        const conflitoPlantonista = allEscalas.find(e => e.usuarioCodigo === usuarioCodigo && e.periodoCodigo === periodoCodigo);
+        if (conflitoPlantonista) {
+           res.status(400).json({ error: 'Este plantonista já está ocupado neste dia e horário.' });
+           return;
+        }
+
+        const escala = await escalaRepository.create({ codigo, areaCodigo, periodoCodigo, usuarioCodigo });
         res.status(201).json(escala);
       });
 
       // PUT /api/escalas/:id — Editar escala
-      app.put('/api/escalas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.put('/api/escalas/:id', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = escalaRepository.getById(id);
+        const existing = await escalaRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Escala não encontrada' });
           return;
         }
         const { codigo, areaCodigo, periodoCodigo, usuarioCodigo } = req.body || {};
-        const updated = escalaRepository.update(id, { codigo, areaCodigo, periodoCodigo, usuarioCodigo });
+        const updated = await escalaRepository.update(id, { codigo, areaCodigo, periodoCodigo, usuarioCodigo });
         res.json(updated);
       });
 
       // DELETE /api/escalas/:id — Deletar escala
-      app.delete('/api/escalas/:id', authMiddleware, writeBlockMiddleware, (req: Request, res: Response) => {
+      app.delete('/api/escalas/:id', authMiddleware, writeBlockMiddleware, async (req: Request, res: Response) => {
         const id = parseInt(req.params.id as string, 10);
         if (isNaN(id)) {
           res.status(400).json({ error: 'ID inválido' });
           return;
         }
-        const existing = escalaRepository.getById(id);
+        const existing = await escalaRepository.getById(id);
         if (!existing) {
           res.status(404).json({ error: 'Escala não encontrada' });
           return;
         }
-        escalaRepository.delete(id);
+        await escalaRepository.delete(id);
         res.json({ success: true });
       });
     }
@@ -2200,19 +2249,120 @@ export function createServer(deps: ServerDependencies): Express {
   if (deps.problemaRepository) {
     const problemaRepo = deps.problemaRepository;
 
+    // GET /api/problemas/template — Download do template CSV para Problemas
+    app.get('/api/problemas/template', (_req: Request, res: Response) => {
+      const csv = 'Código,Descrição,Área 1,Área 2,Área 3,Área 4,Área 5\nPROB-01,"Exemplo de Problema",ÁREA-TI,ÁREA-REDES,,,';
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=Template_Problemas.csv');
+      res.send(csv);
+    });
+
+    // GET /api/problemas/export — Exportar problemas em CSV
+    app.get('/api/problemas/export', async (_req: Request, res: Response) => {
+      try {
+        const problemas = await problemaRepo.getAllWithAreas();
+        let csv = 'Código,Descrição,Área 1,Área 2,Área 3,Área 4,Área 5\n';
+        for (const p of problemas) {
+          const row = [
+            `"${p.codigo}"`,
+            `"${p.descricao}"`,
+            p.areas[0]?.areaCodigo ? `"${p.areas[0].areaCodigo}"` : '',
+            p.areas[1]?.areaCodigo ? `"${p.areas[1].areaCodigo}"` : '',
+            p.areas[2]?.areaCodigo ? `"${p.areas[2].areaCodigo}"` : '',
+            p.areas[3]?.areaCodigo ? `"${p.areas[3].areaCodigo}"` : '',
+            p.areas[4]?.areaCodigo ? `"${p.areas[4].areaCodigo}"` : '',
+          ];
+          csv += row.join(',') + '\n';
+        }
+        res.setHeader('Content-Type', 'text/csv;charset=utf-8;');
+        res.setHeader('Content-Disposition', 'attachment; filename=problemas.csv');
+        res.send('\uFEFF' + csv); // BOM for Excel
+      } catch (e) {
+        res.status(500).json({ error: 'Erro ao exportar problemas' });
+      }
+    });
+
+    // POST /api/problemas/import — Importar problemas via CSV
+    app.post('/api/problemas/import', upload.single('file'), async (req: Request, res: Response) => {
+      if (!req.file) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado' });
+        return;
+      }
+      
+      const buffer = req.file.buffer;
+      const fileName = (req.file.originalname || '').toLowerCase();
+      let csvContent = '';
+
+      if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+        const XLSX = require('xlsx');
+        const workbook = XLSX.read(buffer, { type: 'buffer' });
+        csvContent = XLSX.utils.sheet_to_csv(workbook.Sheets[workbook.SheetNames[0]]);
+      } else {
+        csvContent = buffer.toString('utf8');
+      }
+
+      const lines = csvContent.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+      if (lines.length < 2) {
+        res.status(400).json({ error: 'Arquivo vazio ou sem dados' });
+        return;
+      }
+
+      const { parseCSVRow, normalizeForComparison } = require('./services/escalation-csv-processor');
+      const allProblemas = await problemaRepo.getAll();
+      const allAreas = deps.areaRepository ? await deps.areaRepository.getAll() : [];
+      let created = 0, updated = 0, errors: string[] = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const row = parseCSVRow(lines[i]);
+        const codigo = (row[0] || '').trim();
+        const descricao = (row[1] || '').trim();
+        if (!codigo || !descricao) continue;
+
+        const areaCols = row.slice(2, 7).map(a => a.trim()).filter(a => a);
+        const problemaAreas = [];
+        let ordem = 1;
+
+        for (const areaName of areaCols) {
+          const norm = normalizeForComparison(areaName);
+          const area = allAreas.find((a: any) => normalizeForComparison(a.nome) === norm || normalizeForComparison(a.codigo) === norm);
+          if (area) {
+            problemaAreas.push({ areaCodigo: area.codigo, ordem: ordem++ });
+          } else {
+            errors.push(`Linha ${i+1}: Área '${areaName}' não encontrada.`);
+          }
+        }
+
+        const existing = allProblemas.find(p => p.codigo === codigo);
+        if (existing) {
+          await problemaRepo.update(existing.id, { codigo, descricao });
+          await problemaRepo.replaceAreas(existing.id, problemaAreas);
+          updated++;
+        } else {
+          try {
+            const p = await problemaRepo.create({ codigo, descricao });
+            await problemaRepo.replaceAreas(p.id, problemaAreas);
+            created++;
+          } catch {
+            errors.push(`Linha ${i+1}: Falha ao criar problema '${codigo}' (possível descrição duplicada).`);
+          }
+        }
+      }
+
+      res.json({ success: true, created, updated, errors });
+    });
     // GET /api/problemas — Listar problemas com áreas
-    app.get('/api/problemas', (_req: Request, res: Response) => {
-      const problemas = problemaRepo.getAllWithAreas();
+    app.get('/api/problemas', async (_req: Request, res: Response) => {
+      const problemas = await problemaRepo.getAllWithAreas();
       res.json(problemas);
     });
 
     // GET /api/problemas/:id — Detalhes de um problema
-    app.get('/api/problemas/:id', (req: Request, res: Response) => {
+    app.get('/api/problemas/:id', async (req: Request, res: Response) => {
       const id = parseInt(req.params.id as string, 10);
       if (isNaN(id)) { res.status(400).json({ error: 'ID inválido' }); return; }
-      const problema = problemaRepo.getById(id);
+      const problema = await problemaRepo.getById(id);
       if (!problema) { res.status(404).json({ error: 'Problema não encontrado' }); return; }
-      const areas = problemaRepo.getAreas(id);
+      const areas = await problemaRepo.getAreas(id);
       res.json({ ...problema, areas });
     });
 
@@ -2223,11 +2373,21 @@ export function createServer(deps: ServerDependencies): Express {
         res.status(400).json({ error: 'codigo e descricao são obrigatórios' });
         return;
       }
+
+      const allProblemas = await problemaRepo.getAll();
+
       // Check unique codigo
-      if (await problemaRepo.getByCodigo(codigo)) {
-        res.status(400).json({ error: 'Código já existe' });
+      if (allProblemas.find(p => p.codigo === codigo)) {
+        res.status(400).json({ error: 'Já existe um problema cadastrado com este Código.' });
         return;
       }
+
+      // Check unique description
+      if (allProblemas.find(p => p.descricao.toLowerCase() === descricao.toLowerCase())) {
+        res.status(400).json({ error: 'Já existe um problema cadastrado com esta exata Descrição.' });
+        return;
+      }
+
       const problema = await problemaRepo.create({ codigo, descricao });
       // Add areas if provided
       if (Array.isArray(areas) && areas.length > 0) {
