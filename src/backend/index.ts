@@ -269,8 +269,8 @@ async function main(): Promise<void> {
   wsServer.attach(httpServer);
 
   // 9. Start polling
-  datadogPollingService.start();
-  console.log('[CommandCenter] Datadog polling started (30s interval)');
+  // datadogPollingService.start();
+  // console.log('[CommandCenter] Datadog polling started (30s interval)');
 
   // 10. Start HTTP server
   httpServer.listen(PORT, () => {
