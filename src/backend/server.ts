@@ -138,22 +138,6 @@ export function createServer(deps: ServerDependencies): Express {
     }
   }
 
-  // GET /api/audit-logs
-  app.get('/api/audit-logs', authMiddleware, async (_req: Request, res: Response) => {
-    if (!deps.db) {
-      res.status(500).json({ error: 'DB não disponível' });
-      return;
-    }
-    try {
-      const result = await deps.db.query(
-        'SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 1000'
-      );
-      res.json(result.rows);
-    } catch (err) {
-      res.status(500).json({ error: 'Erro ao carregar auditoria' });
-    }
-  });
-
   // POST /api/admin/cleanup-corrupted — Remove dados corrompidos (endpoint emergencial, remover após uso)
   app.post('/api/admin/cleanup-corrupted', (_req: Request, res: Response) => {
     // ... [código anterior]
@@ -1608,6 +1592,22 @@ export function createServer(deps: ServerDependencies): Express {
     const dbAreaFilterMiddleware = deps.userAreaRepository
       ? createAreaFilterMiddleware(deps.userAreaRepository)
       : areaFilterMiddleware;
+
+    // GET /api/audit-logs
+    app.get('/api/audit-logs', authMiddleware, roleMiddleware(['Adm']), async (_req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(500).json({ error: 'DB não disponível' });
+        return;
+      }
+      try {
+        const result = await deps.db.query(
+          'SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 1000'
+        );
+        res.json(result.rows);
+      } catch (err) {
+        res.status(500).json({ error: 'Erro ao carregar auditoria' });
+      }
+    });
 
     // GET /api/auth/me — Retornar dados do usuário logado
     app.get('/api/auth/me', authMiddleware, async (req: Request, res: Response) => {
