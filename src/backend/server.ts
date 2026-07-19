@@ -1638,13 +1638,22 @@ export function createServer(deps: ServerDependencies): Express {
             u.perfil.toLowerCase().includes(searchLower)
           );
         }
-        const usersWithoutPassword = users.map(({ senhaHash, ...u }) => u);
+        let usersWithoutPassword = users.map(({ senhaHash, ...u }) => u as any);
+        
+        if (deps.userAreaRepository) {
+          const uar = deps.userAreaRepository;
+          usersWithoutPassword = await Promise.all(usersWithoutPassword.map(async u => {
+            const extras = await uar.getAreasForUser(u.id);
+            return { ...u, areasExtras: extras };
+          }));
+        }
+
         res.json({ users: usersWithoutPassword, total: usersWithoutPassword.length });
       });
 
       // POST /api/users — Criar usuário (admin only)
       app.post('/api/users', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
-        const { codigo, areaCodigo, nome, perfil, cargo, contato, username, senha } = req.body || {};
+        const { codigo, areaCodigo, areasExtras, nome, perfil, cargo, contato, username, senha } = req.body || {};
         if (!codigo || !nome || !perfil || !username || !senha) {
           res.status(400).json({ error: 'codigo, nome, perfil, username e senha são obrigatórios' });
           return;
@@ -1654,6 +1663,13 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(400).json({ error: result.error });
           return;
         }
+        
+        if (areasExtras && Array.isArray(areasExtras) && deps.userAreaRepository) {
+          for (const extra of areasExtras) {
+            await deps.userAreaRepository.addAreaBinding(result.user!.id, extra);
+          }
+        }
+        
         res.status(201).json({ user: result.user });
       });
 
@@ -1669,12 +1685,24 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(404).json({ error: 'Usuário não encontrado' });
           return;
         }
-        const { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo } = req.body || {};
+        const { codigo, areaCodigo, areasExtras, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo } = req.body || {};
         const updated = await userRepository.update(id, { codigo, areaCodigo, nome, perfil, cargo, contato, username, nivelEscalonamento, ativo });
         if (!updated) {
           res.status(500).json({ error: 'Erro ao atualizar usuário' });
           return;
         }
+        
+        if (areasExtras && Array.isArray(areasExtras) && deps.userAreaRepository) {
+           const uar = deps.userAreaRepository;
+           const currentExtras = await uar.getAreasForUser(id);
+           for (const cur of currentExtras) {
+             if (!areasExtras.includes(cur)) await uar.removeAreaBinding(id, cur);
+           }
+           for (const next of areasExtras) {
+             if (!currentExtras.includes(next)) await uar.addAreaBinding(id, next);
+           }
+        }
+        
         const { senhaHash, ...userWithoutPassword } = updated;
         res.json(userWithoutPassword);
       });
