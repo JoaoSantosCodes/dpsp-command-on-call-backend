@@ -10,16 +10,16 @@ export class AreaRepository {
 
   async create(area: Omit<Area, 'id' | 'createdAt' | 'updatedAt'>): Promise<Area> {
     const res = await this.db.query(`
-      INSERT INTO areas (codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      INSERT INTO areas (codigo, nome, grupo, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
       RETURNING id
-    `, [area.codigo, area.nome, area.torre || null, area.coordenadorNome || null, area.coordenadorContato || null, area.gerenteNome || null, area.gerenteContato || null]);
+    `, [area.codigo, area.nome, area.grupo || null, area.torre || null, area.coordenadorNome || null, area.coordenadorContato || null, area.gerenteNome || null, area.gerenteContato || null]);
     return (await this.getById(res.rows[0].id))!;
   }
 
   async getById(id: number): Promise<Area | undefined> {
     const res = await this.db.query(`
-      SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
+      SELECT id, codigo, nome, grupo, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas WHERE id = $1
     `, [id]);
     const row = res.rows[0];
@@ -29,7 +29,7 @@ export class AreaRepository {
 
   async getByCodigo(codigo: string): Promise<Area | undefined> {
     const res = await this.db.query(`
-      SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
+      SELECT id, codigo, nome, grupo, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas WHERE codigo = $1
     `, [codigo]);
     const row = res.rows[0];
@@ -39,7 +39,7 @@ export class AreaRepository {
 
   async getAll(): Promise<Area[]> {
     const res = await this.db.query(`
-      SELECT id, codigo, nome, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
+      SELECT id, codigo, nome, grupo, torre, coordenador_nome, coordenador_contato, gerente_nome, gerente_contato, created_at, updated_at
       FROM areas ORDER BY nome ASC
     `);
     return res.rows.map(this.mapRow);
@@ -52,6 +52,7 @@ export class AreaRepository {
 
     if (data.codigo !== undefined) { fields.push(`codigo = $${idx++}`); values.push(data.codigo); }
     if (data.nome !== undefined) { fields.push(`nome = $${idx++}`); values.push(data.nome); }
+    if (data.grupo !== undefined) { fields.push(`grupo = $${idx++}`); values.push(data.grupo || null); }
     if (data.torre !== undefined) { fields.push(`torre = $${idx++}`); values.push(data.torre || null); }
     if (data.coordenadorNome !== undefined) { fields.push(`coordenador_nome = $${idx++}`); values.push(data.coordenadorNome || null); }
     if (data.coordenadorContato !== undefined) { fields.push(`coordenador_contato = $${idx++}`); values.push(data.coordenadorContato || null); }
@@ -77,6 +78,7 @@ export class AreaRepository {
       id: row.id,
       codigo: row.codigo,
       nome: row.nome,
+      grupo: row.grupo || null,
       torre: row.torre || null,
       coordenadorNome: row.coordenador_nome || null,
       coordenadorContato: row.coordenador_contato || null,

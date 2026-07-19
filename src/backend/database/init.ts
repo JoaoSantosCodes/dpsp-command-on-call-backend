@@ -248,6 +248,9 @@ async function createTables(db: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_escalas_area ON escalas(area_codigo);
     CREATE INDEX IF NOT EXISTS idx_escalas_periodo ON escalas(periodo_codigo);
     CREATE INDEX IF NOT EXISTS idx_periodos_area_data ON periodos(area_codigo, data);
+
+    -- Migration: add grupo to areas
+    ALTER TABLE areas ADD COLUMN IF NOT EXISTS grupo TEXT;
   `);
 }
 

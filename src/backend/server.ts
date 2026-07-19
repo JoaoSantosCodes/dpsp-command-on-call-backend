@@ -596,7 +596,7 @@ export function createServer(deps: ServerDependencies): Express {
                 } else {
                   areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
                   try {
-                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, grupo: null, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
                     areasCreated++;
                   } catch { /* skip */ }
                 }
@@ -734,7 +734,7 @@ export function createServer(deps: ServerDependencies): Express {
                 } else {
                   areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
                   try {
-                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, grupo: null, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
                     areasCreated++;
                   } catch { /* skip */ }
                 }
@@ -1945,7 +1945,7 @@ export function createServer(deps: ServerDependencies): Express {
 
       // POST /api/areas — Criar nova área (admin only)
       app.post('/api/areas', authMiddleware, writeBlockMiddleware, roleMiddleware(['Adm']), async (req: Request, res: Response) => {
-        const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
+        const { codigo, nome, grupo, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
         if (!codigo || !nome) {
           res.status(400).json({ error: 'codigo e nome são obrigatórios' });
           return;
@@ -1959,7 +1959,7 @@ export function createServer(deps: ServerDependencies): Express {
            res.status(400).json({ error: 'Já existe uma Área cadastrada com este Nome.' });
            return;
         }
-        const area = await areaRepo.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
+        const area = await areaRepo.create({ codigo, nome, grupo: grupo || null, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
         await logAuditAction(req, 'CREATE', 'AREA', `Criada área ${area.nome} (Código: ${area.codigo})`);
         res.status(201).json(area);
       });
@@ -1976,7 +1976,7 @@ export function createServer(deps: ServerDependencies): Express {
           res.status(404).json({ error: 'Área não encontrada' });
           return;
         }
-        const { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
+        const { codigo, nome, grupo, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato } = req.body || {};
         const allAreas = await areaRepo.getAll();
         
         if (codigo && codigo.toLowerCase() !== existing.codigo.toLowerCase() && allAreas.find(a => a.codigo.toLowerCase() === codigo.toLowerCase())) {
@@ -1988,7 +1988,7 @@ export function createServer(deps: ServerDependencies): Express {
            return;
         }
 
-        const updated = await areaRepo.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
+        const updated = await areaRepo.update(id, { codigo, nome, grupo, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
         await logAuditAction(req, 'UPDATE', 'AREA', `Atualizada área ${updated!.nome} (Código: ${updated!.codigo})`);
         res.json(updated);
       });
