@@ -11,6 +11,7 @@ import { IncidentHistoryService } from './services/incident-history';
 import { CSVProcessor } from './services/csv-processor';
 import { normalizeForComparison, hasGarbledCharacters } from '../shared/normalize';
 import { parseEscalationCSV, getCurrentOnCallForArea, EscalationEntry, isReadableText } from './services/escalation-csv-processor';
+import { parseAreasCSV } from './services/areas-csv-processor';
 import { getAreasForMonitor, getPrimaryAreaForMonitor } from './services/monitor-area-mapping';
 import { AuthService } from './services/auth';
 import { createAuthMiddleware, roleMiddleware, areaFilterMiddleware, createAreaFilterMiddleware, getEffectiveAreaFilter, getEffectiveAreas, writeBlockMiddleware } from './middleware/auth';
@@ -504,6 +505,71 @@ export function createServer(deps: ServerDependencies): Express {
     res.json(importResult);
   });
 
+  // POST /api/areas/import — Importar CSV com Cadastro de Áreas
+  app.post('/api/areas/import', upload.single('file'), async (req: Request, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ error: 'Nenhum arquivo enviado' });
+      return;
+    }
+    
+    if (!deps.areaRepository) {
+      res.status(500).json({ error: 'Area repository not available' });
+      return;
+    }
+
+    try {
+      const csvContent = req.file.buffer.toString('utf-8');
+      const result = parseAreasCSV(csvContent);
+      
+      if (result.errors.length > 0 && result.areas.length === 0) {
+        res.status(400).json({ error: result.errors.join(', ') });
+        return;
+      }
+
+      let created = 0;
+      let updated = 0;
+
+      const existingAreas = await deps.areaRepository.getAll();
+
+      for (const area of result.areas) {
+        const areaNorm = normalizeForComparison(area.aplicacao);
+        const codeNorm = normalizeForComparison(area.codigo);
+        const match = existingAreas.find(a => normalizeForComparison(a.nome) === areaNorm || normalizeForComparison(a.codigo) === codeNorm);
+        
+        if (match) {
+          // Update
+          await deps.areaRepository.update(match.id, {
+            nome: area.aplicacao,
+            torre: area.torre || match.torre,
+            grupo: area.grupo || match.grupo,
+            coordenadorNome: area.coordenadorNome || match.coordenadorNome,
+            coordenadorContato: area.coordenadorContato || match.coordenadorContato,
+            gerenteNome: area.gerenteNome || match.gerenteNome,
+            gerenteContato: area.gerenteContato || match.gerenteContato
+          });
+          updated++;
+        } else {
+          // Create
+          await deps.areaRepository.create({
+            codigo: area.codigo,
+            nome: area.aplicacao,
+            torre: area.torre || null,
+            grupo: area.grupo || null,
+            coordenadorNome: area.coordenadorNome || null,
+            coordenadorContato: area.coordenadorContato || null,
+            gerenteNome: area.gerenteNome || null,
+            gerenteContato: area.gerenteContato || null
+          });
+          created++;
+        }
+      }
+
+      res.json({ success: true, created, updated, total: result.areas.length });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao processar CSV de áreas: ' + e.message });
+    }
+  });
+
   // POST /api/escalation/import — Importar CSV/XLSX de escalonamento (formato área → colaboradores → dias)
   app.post('/api/escalation/import', upload.single('file'), async (req: Request, res: Response) => {
     if (!req.file) {
@@ -593,10 +659,19 @@ export function createServer(deps: ServerDependencies): Express {
                 let areaCodigo: string;
                 if (matchingArea) {
                   areaCodigo = matchingArea.codigo;
+                  // Se o CSV forneceu torre/grupo, atualiza a área existente
+                  if (parsedArea.torre || parsedArea.grupo) {
+                    const updates: any = {};
+                    if (parsedArea.torre && matchingArea.torre !== parsedArea.torre) updates.torre = parsedArea.torre;
+                    if (parsedArea.grupo && matchingArea.grupo !== parsedArea.grupo) updates.grupo = parsedArea.grupo;
+                    if (Object.keys(updates).length > 0) {
+                      try { await areaRepo.update(matchingArea.id, updates); } catch { /* skip */ }
+                    }
+                  }
                 } else {
                   areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
                   try {
-                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, grupo: null, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, grupo: parsedArea.grupo || null, torre: parsedArea.torre || null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
                     areasCreated++;
                   } catch { /* skip */ }
                 }
@@ -731,10 +806,19 @@ export function createServer(deps: ServerDependencies): Express {
                 let areaCodigo: string;
                 if (matchingArea) {
                   areaCodigo = matchingArea.codigo;
+                  // Se o CSV forneceu torre/grupo, atualiza a área existente
+                  if (parsedArea.torre || parsedArea.grupo) {
+                    const updates: any = {};
+                    if (parsedArea.torre && matchingArea.torre !== parsedArea.torre) updates.torre = parsedArea.torre;
+                    if (parsedArea.grupo && matchingArea.grupo !== parsedArea.grupo) updates.grupo = parsedArea.grupo;
+                    if (Object.keys(updates).length > 0) {
+                      try { await areaRepo.update(matchingArea.id, updates); } catch { /* skip */ }
+                    }
+                  }
                 } else {
                   areaCodigo = parsedArea.area.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
                   try {
-                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, grupo: null, torre: null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
+                    await areaRepo.create({ codigo: areaCodigo, nome: parsedArea.area, grupo: parsedArea.grupo || null, torre: parsedArea.torre || null, coordenadorNome: null, coordenadorContato: null, gerenteNome: null, gerenteContato: null });
                     areasCreated++;
                   } catch { /* skip */ }
                 }

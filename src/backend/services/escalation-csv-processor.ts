@@ -98,8 +98,23 @@ export function parseStructuredMatrixCSV(csvContent: string, sheetName?: string)
   // Parse data rows
   const entries: EscalationEntry[] = [];
   const areas: ParsedEscalation[] = [];
+  // Find Torre and Grupo in the first few lines
+  let torre: string | undefined;
+  let grupo: string | undefined;
+
+  for (let i = 1; i < Math.min(6, lines.length); i++) {
+    if (i === headerRowIdx) break;
+    const rowStr = (parseCSVRow(lines[i])[0] || '').trim();
+    const lower = rowStr.toLowerCase();
+    if (lower.startsWith('torre:')) {
+      torre = rowStr.substring(6).trim();
+    } else if (lower.startsWith('grupo:') || lower.startsWith('área pai:') || lower.startsWith('area pai:')) {
+      grupo = rowStr.substring(rowStr.indexOf(':') + 1).trim();
+    }
+  }
+
   const finalAreaName = sheetName || areaName;
-  const currentArea: ParsedEscalation = { area: finalAreaName, colaboradores: [] };
+  const currentArea: ParsedEscalation = { area: finalAreaName, torre, grupo, colaboradores: [] };
   areas.push(currentArea);
 
   for (let i = headerRowIdx + 1; i < lines.length; i++) {
@@ -215,6 +230,8 @@ export interface EscalationEntry {
 
 export interface ParsedEscalation {
   area: string;
+  torre?: string;
+  grupo?: string;
   colaboradores: Array<{
     nome: string;
     cargo: string;
