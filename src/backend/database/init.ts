@@ -229,6 +229,19 @@ async function createTables(db: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_contato_log_data ON contato_log(data);
     CREATE INDEX IF NOT EXISTS idx_contato_log_area ON contato_log(area_codigo, data);
 
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      resource TEXT NOT NULL,
+      details TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+
     CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
     CREATE INDEX IF NOT EXISTS idx_incidents_started_at ON incidents(started_at);
     CREATE INDEX IF NOT EXISTS idx_users_area ON users(area_codigo);

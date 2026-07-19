@@ -124,6 +124,36 @@ export function createServer(deps: ServerDependencies): Express {
     }).catch(() => { /* table might not exist yet */ });
   }
 
+  async function logAuditAction(req: Request, action: string, resource: string, details?: string) {
+    if (!deps.db) return;
+    const user = (req as any).user;
+    if (!user) return;
+    try {
+      await deps.db.query(
+        'INSERT INTO audit_logs (user_id, username, action, resource, details) VALUES ($1, $2, $3, $4, $5)',
+        [user.id, user.username, action, resource, details || null]
+      );
+    } catch (err) {
+      console.error('Failed to save audit log:', err);
+    }
+  }
+
+  // GET /api/audit-logs
+  app.get('/api/audit-logs', authMiddleware, async (_req: Request, res: Response) => {
+    if (!deps.db) {
+      res.status(500).json({ error: 'DB não disponível' });
+      return;
+    }
+    try {
+      const result = await deps.db.query(
+        'SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 1000'
+      );
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ error: 'Erro ao carregar auditoria' });
+    }
+  });
+
   // POST /api/admin/cleanup-corrupted — Remove dados corrompidos (endpoint emergencial, remover após uso)
   app.post('/api/admin/cleanup-corrupted', (_req: Request, res: Response) => {
     // ... [código anterior]
@@ -1702,6 +1732,7 @@ export function createServer(deps: ServerDependencies): Express {
           }
         }
         
+        await logAuditAction(req, 'CREATE', 'USER', `Criado usuário ${result.user!.username} (ID: ${result.user!.id})`);
         res.status(201).json({ user: result.user });
       });
 
@@ -1735,6 +1766,7 @@ export function createServer(deps: ServerDependencies): Express {
            }
         }
         
+        await logAuditAction(req, 'UPDATE', 'USER', `Atualizado usuário ${updated.username} (ID: ${id})`);
         const { senhaHash, ...userWithoutPassword } = updated;
         res.json(userWithoutPassword);
       });
@@ -1752,6 +1784,7 @@ export function createServer(deps: ServerDependencies): Express {
           return;
         }
         await userRepository.delete(id);
+        await logAuditAction(req, 'DELETE', 'USER', `Deletado usuário ${existing.username} (ID: ${id})`);
         res.json({ success: true });
       });
 
@@ -1927,6 +1960,7 @@ export function createServer(deps: ServerDependencies): Express {
            return;
         }
         const area = await areaRepo.create({ codigo, nome, torre: torre || null, coordenadorNome: coordenadorNome || null, coordenadorContato: coordenadorContato || null, gerenteNome: gerenteNome || null, gerenteContato: gerenteContato || null });
+        await logAuditAction(req, 'CREATE', 'AREA', `Criada área ${area.nome} (Código: ${area.codigo})`);
         res.status(201).json(area);
       });
 
@@ -1955,6 +1989,7 @@ export function createServer(deps: ServerDependencies): Express {
         }
 
         const updated = await areaRepo.update(id, { codigo, nome, torre, coordenadorNome, coordenadorContato, gerenteNome, gerenteContato });
+        await logAuditAction(req, 'UPDATE', 'AREA', `Atualizada área ${updated!.nome} (Código: ${updated!.codigo})`);
         res.json(updated);
       });
 
