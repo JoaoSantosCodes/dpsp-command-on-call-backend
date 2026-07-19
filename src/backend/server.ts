@@ -1242,6 +1242,38 @@ export function createServer(deps: ServerDependencies): Express {
     res.json(incidents);
   });
 
+  app.get('/api/analytics', async (_req: Request, res: Response) => {
+    if (deps.db) {
+      try {
+        const result = await deps.db.query(`
+          SELECT 
+            AVG(EXTRACT(EPOCH FROM (acknowledged_at - started_at))) as mtta_seconds,
+            AVG(EXTRACT(EPOCH FROM (resolved_at - started_at))) as mttr_seconds,
+            COUNT(*) as total_incidents,
+            COUNT(CASE WHEN status = 'resolved' THEN 1 END) as resolved_incidents
+          FROM incidents
+          WHERE started_at >= NOW() - INTERVAL '30 days'
+        `);
+        const row = result.rows[0];
+        res.json({
+          mtta_seconds: parseFloat(row.mtta_seconds) || 0,
+          mttr_seconds: parseFloat(row.mttr_seconds) || 0,
+          total_incidents: parseInt(row.total_incidents) || 0,
+          resolved_incidents: parseInt(row.resolved_incidents) || 0
+        });
+      } catch (err) {
+        res.status(500).json({ error: 'Erro ao carregar analytics' });
+      }
+    } else {
+      res.json({
+        mtta_seconds: 300,
+        mttr_seconds: 1800,
+        total_incidents: 15,
+        resolved_incidents: 12
+      });
+    }
+  });
+
   // POST /api/incidents/:id/acknowledge — Confirmar atendimento
   app.post('/api/incidents/:id/acknowledge', (req: Request, res: Response) => {
     const id = req.params.id as string;
